@@ -177,9 +177,89 @@ t <- tplyr_table(adsl, TRTP) %>%
 
 ---
 
+## SKILL 9: Oncology Response Rate Tables (ADRS / BOR)
+**Condition**: `dataset_source` is "ADRS" OR title contains "Response", "ORR", "Tumor", "BOR"
+**Action**: Filter on PARAMCD, apply population flags, use `group_count()` for categories and a derived binary flag for ORR/DCR.
+
+```r
+# Apply population filter and PARAMCD filter from AdaM specs
+adrs <- adrs %>%
+  filter(FASFL == "Y", ANL01FL == "Y", PARAMCD == "BOR")
+
+# Best Overall Response — categorical counts
+t_bor <- tplyr_table(adrs, TRTP) %>%
+  add_total_group() %>%
+  add_layer(
+    group_count(AVALC, by = "Best Overall Response") %>%
+      set_format_strings("n (%)" = f_str("xx (xx.x%)", n, pct)) %>%
+      set_distinct_by(USUBJID)
+  )
+
+# Overall Response Rate (CR + PR)
+adrs_orr <- adrs %>% mutate(ORR_FLAG = if_else(AVALC %in% c("CR", "PR"), "Responder", "Non-Responder"))
+t_orr <- tplyr_table(adrs_orr, TRTP) %>%
+  add_total_group() %>%
+  add_layer(
+    group_count(ORR_FLAG, by = "Overall Response Rate") %>%
+      set_format_strings("n (%)" = f_str("xx (xx.x%)", n, pct)) %>%
+      set_distinct_by(USUBJID)
+  )
+
+final_df <- bind_rows(t_bor %>% build(), t_orr %>% build())
+```
+- Always use `set_distinct_by(USUBJID)` to count unique subjects
+- ORR = AVALC in ('CR', 'PR'); DCR = AVALC in ('CR', 'PR', 'SD')
+- Apply `FASFL == 'Y'` and `ANL01FL == 'Y'` from AdaM specs population_flags
+
+---
+
+## SKILL 10: Survival / Time-to-Event Tables (KM, Median OS/PFS/DOR)
+**Condition**: title contains "Survival", "PFS", "OS", "Duration", "Time-to-Event" OR stats include "Median (95% CI)"
+**Action**: Use `survival::survfit()` for Kaplan-Meier estimates. AVAL = time, CNSR = 1 if censored.
+
+```r
+pkgs <- c("survival", "dplyr", "haven", "broom")
+for (pkg in pkgs) {
+  if (!requireNamespace(pkg, quietly = TRUE)) install.packages(pkg, repos = "https://cloud.r-project.org")
+}
+library(survival); library(dplyr); library(haven); library(broom)
+
+# Filter per AdaM specs
+adam_km <- adam_km %>% filter(FASFL == "Y", ANL01FL == "Y", PARAMCD == "OS")
+
+# KM by treatment group
+km_fit <- survfit(Surv(AVAL, 1 - CNSR) ~ TRTP, data = adam_km)
+km_summary <- tidy(km_fit) %>%
+  group_by(strata) %>%
+  summarise(
+    n_subjects = n(),
+    median_months = min(estimate[estimate <= 0.5], na.rm = TRUE),
+    .groups = "drop"
+  )
+# For full median + CI table use summary(km_fit)$table
+
+final_df <- km_summary
+```
+- `AVAL` = time in months; `CNSR` = 1 for censored, 0 for event (check AdaM specs)
+- Use `broom::tidy()` for a tidy output data frame
+- Never hard-code treatment group values — use `TRTP` grouping variable from AdaM specs
+
+---
+
+## ADAM SPECS INTEGRATION RULES
+When AdaM specifications JSON is provided, ALWAYS:
+1. Use `treatment_variable` from specs (TRTP / TRTA / TRT01P) — never default without checking
+2. Apply ALL `population_flags` as filter conditions (e.g. `filter(FASFL == 'Y', ANL01FL == 'Y')`)
+3. Apply `paramcd_filter` from `analysis_conditions` that matches the table title
+4. Use `primary_var` from `analysis_conditions` as the main analysis variable
+5. Reference `codelist` values from `key_variables` for any derived flag (e.g. ORR = AVALC %in% c('CR','PR'))
+6. Use `derived_condition` field to guide any custom derivations
+
+---
+
 ## GENERAL GUIDELINES
-- Variable names must come from the JSON `analysis_var` field — never guess
-- Treatment variable is typically `TRTP` (planned) or `TRTA` (actual) or `TRT01P` — use what the JSON implies
-- If the JSON does not specify the treatment variable, default to `TRTP` for efficacy, `TRTA` for safety
+- Variable names must come from the AdaM specs JSON `key_variables` or the shell JSON `analysis_var` — never guess
+- Treatment variable is typically `TRTP` (planned) or `TRTA` (actual) or `TRT01P` — use what the AdaM specs specify
+- If AdaM specs are not provided, default to `TRTP` for efficacy, `TRTA` for safety
 - Always handle the case where the dataset might have character or factor treatment variables
 - The output `final_df` should be a flat data frame ready for display — no nested lists
