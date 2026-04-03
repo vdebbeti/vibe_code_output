@@ -21,8 +21,8 @@ from r_executor import run_r_script
 
 load_dotenv()
 
-BASE_DIR  = Path(__file__).parent
-DATA_DIR  = BASE_DIR / "data"
+BASE_DIR    = Path(__file__).parent
+DATA_DIR    = BASE_DIR / "data"
 SKILLS_PATH = BASE_DIR / "skills.md"
 
 # ── Page config ───────────────────────────────────────────────────────────────
@@ -31,6 +31,28 @@ st.set_page_config(
     page_icon="📊",
     layout="wide",
 )
+
+# ── Sidebar — API key ─────────────────────────────────────────────────────────
+with st.sidebar:
+    st.header("🔑 OpenAI API Key")
+    _env_key = os.getenv("OPENAI_API_KEY", "")
+    _key_input = st.text_input(
+        "Paste your OpenAI API key",
+        value=_env_key,
+        type="password",
+        placeholder="sk-...",
+        help="Your key is stored only in your browser session and never saved to disk.",
+    )
+    # Resolve: prefer what the user typed; fall back to .env
+    OPENAI_API_KEY = _key_input.strip() or _env_key
+
+    if OPENAI_API_KEY:
+        st.success("API key set ✓", icon="✅")
+    else:
+        st.warning("Enter your OpenAI API key to use the app.", icon="⚠️")
+
+    st.divider()
+    st.caption("Key is used only for the current session and never stored on the server.")
 
 st.title("📊 TLF Output Generator")
 st.caption(
@@ -115,14 +137,17 @@ with tab1:
 
         if parse_btn:
             file_bytes = uploaded_file.read()
+            if not OPENAI_API_KEY:
+                st.error("Enter your OpenAI API key in the sidebar first.")
+                st.stop()
             with st.spinner("Sending to GPT-4o-mini for parsing..."):
                 try:
                     if ext in ("png", "jpg", "jpeg"):
-                        result = parse_png(file_bytes)
+                        result = parse_png(file_bytes, api_key=OPENAI_API_KEY)
                     elif ext == "docx":
-                        result = parse_docx(file_bytes)
+                        result = parse_docx(file_bytes, api_key=OPENAI_API_KEY)
                     elif ext == "pdf":
-                        result = parse_pdf(file_bytes)
+                        result = parse_pdf(file_bytes, api_key=OPENAI_API_KEY)
                     else:
                         st.error(f"Unsupported file type: .{ext}")
                         result = None
@@ -211,15 +236,18 @@ with tab2:
         parse_adam_btn = st.button("🔍 Parse AdaM Specs → JSON", type="primary")
 
         if parse_adam_btn:
+            if not OPENAI_API_KEY:
+                st.error("Enter your OpenAI API key in the sidebar first.")
+                st.stop()
             file_bytes = adam_file.read()
             with st.spinner("Sending to GPT-4o-mini for AdaM spec parsing..."):
                 try:
                     if adam_ext in ("xlsx", "xls"):
-                        result = parse_adam_excel(file_bytes)
+                        result = parse_adam_excel(file_bytes, api_key=OPENAI_API_KEY)
                     elif adam_ext == "pdf":
-                        result = parse_adam_pdf(file_bytes)
+                        result = parse_adam_pdf(file_bytes, api_key=OPENAI_API_KEY)
                     elif adam_ext == "docx":
-                        result = parse_adam_docx(file_bytes)
+                        result = parse_adam_docx(file_bytes, api_key=OPENAI_API_KEY)
                     else:
                         st.error(f"Unsupported file type: .{adam_ext}")
                         result = None
@@ -311,12 +339,16 @@ with tab4:
             gen_btn = st.button("⚡ Generate R Script", type="primary", use_container_width=True)
 
         if gen_btn:
+            if not OPENAI_API_KEY:
+                st.error("Enter your OpenAI API key in the sidebar first.")
+                st.stop()
             with st.spinner("Calling GPT-4o-mini to generate R code..."):
                 try:
                     code = generate_r_script(
                         table_json=st.session_state.table_json,
                         skills_md=load_skills(),
                         adam_specs=st.session_state.adam_specs,
+                        api_key=OPENAI_API_KEY,
                     )
                     st.session_state.r_code    = code
                     st.session_state.qc_result = None   # reset previous QC
@@ -353,12 +385,16 @@ with tab4:
                 qc_btn = st.button("🔎 Run QC Review", type="secondary", use_container_width=True)
 
             if qc_btn:
+                if not OPENAI_API_KEY:
+                    st.error("Enter your OpenAI API key in the sidebar first.")
+                    st.stop()
                 with st.spinner("QC agent reviewing generated code..."):
                     try:
                         qc = qc_r_script(
                             r_code=edited_code,
                             table_json=st.session_state.table_json,
                             adam_specs=st.session_state.adam_specs,
+                            api_key=OPENAI_API_KEY,
                         )
                         st.session_state.qc_result = qc
                     except Exception as e:

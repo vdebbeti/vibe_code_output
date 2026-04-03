@@ -61,11 +61,11 @@ def _extract_text_from_docx(file_bytes: bytes) -> str:
     return "\n".join(lines)
 
 
-def parse_docx(file_bytes: bytes) -> dict:
+def parse_docx(file_bytes: bytes, api_key: str | None = None) -> dict:
     """
     Extract text from DOCX and send to GPT-4o-mini for JSON structuring.
     """
-    client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+    client = OpenAI(api_key=api_key or os.getenv("OPENAI_API_KEY"))
     model = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
 
     extracted_text = _extract_text_from_docx(file_bytes)

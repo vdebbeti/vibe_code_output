@@ -41,11 +41,11 @@ Rules:
 """
 
 
-def parse_png(file_bytes: bytes) -> dict:
+def parse_png(file_bytes: bytes, api_key: str | None = None) -> dict:
     """
     Send PNG bytes to GPT-4o-mini vision and return parsed JSON dict.
     """
-    client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+    client = OpenAI(api_key=api_key or os.getenv("OPENAI_API_KEY"))
     model = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
 
     b64 = base64.b64encode(file_bytes).decode("utf-8")

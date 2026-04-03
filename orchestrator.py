@@ -64,8 +64,9 @@ If there are no issues, return qc_passed=true, issues=[], corrected_code="".
 """
 
 
-def _get_client():
-    return OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+def _get_client(api_key: str | None = None):
+    key = api_key or os.getenv("OPENAI_API_KEY")
+    return OpenAI(api_key=key)
 
 
 def _strip_fences(code: str) -> str:
@@ -84,6 +85,7 @@ def generate_r_script(
     table_json: dict,
     skills_md: str,
     adam_specs: dict | None = None,
+    api_key: str | None = None,
 ) -> str:
     """
     Call GPT-4o-mini with table JSON + AdaM specs + skills.md to generate R code.
@@ -96,7 +98,7 @@ def generate_r_script(
     Returns:
         R script as a string
     """
-    client = _get_client()
+    client = _get_client(api_key)
     model  = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
 
     adam_section = ""
@@ -147,6 +149,7 @@ def qc_r_script(
     r_code: str,
     table_json: dict,
     adam_specs: dict | None = None,
+    api_key: str | None = None,
 ) -> dict:
     """
     Run a QC LLM agent on the generated R script.
@@ -158,7 +161,7 @@ def qc_r_script(
             "corrected_code": str   # non-empty only when corrections were made
         }
     """
-    client = _get_client()
+    client = _get_client(api_key)
     model  = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
 
     adam_section = json.dumps(adam_specs, indent=2) if adam_specs else "Not provided."

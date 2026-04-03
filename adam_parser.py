@@ -41,8 +41,9 @@ If any section is not present in the text, return an empty list [] for that fiel
 """
 
 
-def _call_llm(raw_text: str) -> dict:
-    client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+def _call_llm(raw_text: str, api_key: str | None = None) -> dict:
+    key    = api_key or os.getenv("OPENAI_API_KEY")
+    client = OpenAI(api_key=key)
     model  = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
 
     # Truncate to avoid token overflow; specs can be very long
@@ -124,16 +125,16 @@ def _extract_docx_text(file_bytes: bytes) -> str:
 # ─────────────────────────────────────────────────────────────────────────────
 # Public entry points
 # ─────────────────────────────────────────────────────────────────────────────
-def parse_adam_excel(file_bytes: bytes) -> dict:
+def parse_adam_excel(file_bytes: bytes, api_key: str | None = None) -> dict:
     text = _extract_excel_text(file_bytes)
-    return _call_llm(text)
+    return _call_llm(text, api_key=api_key)
 
 
-def parse_adam_pdf(file_bytes: bytes) -> dict:
+def parse_adam_pdf(file_bytes: bytes, api_key: str | None = None) -> dict:
     text = _extract_pdf_text(file_bytes)
-    return _call_llm(text)
+    return _call_llm(text, api_key=api_key)
 
 
-def parse_adam_docx(file_bytes: bytes) -> dict:
+def parse_adam_docx(file_bytes: bytes, api_key: str | None = None) -> dict:
     text = _extract_docx_text(file_bytes)
-    return _call_llm(text)
+    return _call_llm(text, api_key=api_key)
