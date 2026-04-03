@@ -135,14 +135,13 @@ with st.sidebar:
 
 
 # ── Title & flowchart ─────────────────────────────────────────────────────────
-st.markdown(
+st.html(
     "<h1 style='margin-bottom: 4px;'>📊 TLF Output Generator</h1>"
     "<p style='color: #90a4ae; margin-top: 0; font-size: 14px;'>"
-    "LLM-as-Compiler · Mock Shell → JSON → AdaM Specs → R Code → QC → final_df</p>",
-    unsafe_allow_html=True,
+    "LLM-as-Compiler · Mock Shell → JSON → AdaM Specs → R Code → QC → final_df</p>"
 )
 
-st.markdown("""
+st.html("""
 <div style="background: linear-gradient(135deg, #1e3a5f 0%, #0d2137 100%);
             padding: 22px 20px; border-radius: 14px; margin: 8px 0 24px 0;
             box-shadow: 0 4px 24px rgba(0,0,0,0.4);">
@@ -218,7 +217,7 @@ st.markdown("""
     </span>
   </div>
 </div>
-""", unsafe_allow_html=True)
+""")
 
 # ── Session state ─────────────────────────────────────────────────────────────
 for key, default in {
