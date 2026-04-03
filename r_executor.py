@@ -5,52 +5,93 @@ via subprocess Rscript. Captures final_df as a CSV.
 import os
 import subprocess
 import tempfile
-import platform
 from pathlib import Path
 
 
-def _find_rscript() -> str:
-    """Find the Rscript executable on Windows or Unix."""
-    if platform.system() == "Windows":
-        r_base = Path(r"C:\Program Files\R")
-        if r_base.exists():
-            # Pick the highest installed R version
-            versions = sorted(
-                [d for d in r_base.iterdir() if d.is_dir()],
-                reverse=True,
-            )
-            for version_dir in versions:
-                rscript = version_dir / "bin" / "Rscript.exe"
-                if rscript.exists():
-                    return str(rscript)
-    return "Rscript"  # fallback: rely on PATH
+def _find_rscript() -> str | None:
+    """
+    Find Rscript.exe using multiple strategies (Windows-focused).
+    Returns the path string, or None if not found anywhere.
+    """
+    candidates: list[Path] = []
+
+    # 1. Windows registry (most reliable — set at install time)
+    try:
+        import winreg
+        for root in (winreg.HKEY_LOCAL_MACHINE, winreg.HKEY_CURRENT_USER):
+            for sub in (r"SOFTWARE\R-core\R", r"SOFTWARE\WOW6432Node\R-core\R"):
+                try:
+                    with winreg.OpenKey(root, sub) as key:
+                        install_path, _ = winreg.QueryValueEx(key, "InstallPath")
+                        candidates.append(Path(install_path) / "bin" / "Rscript.exe")
+                except (FileNotFoundError, OSError):
+                    pass
+    except ImportError:
+        pass  # not on Windows
+
+    # 2. Well-known Windows install directories
+    for base in [
+        Path(r"C:\Program Files\R"),
+        Path(r"C:\Program Files (x86)\R"),
+        Path(os.path.expanduser(r"~\AppData\Local\Programs\R")),
+    ]:
+        if base.exists():
+            for version_dir in sorted(base.iterdir(), reverse=True):
+                if version_dir.is_dir():
+                    candidates.append(version_dir / "bin" / "Rscript.exe")
+                    candidates.append(version_dir / "bin" / "x64" / "Rscript.exe")
+
+    # 3. Check all candidates in order
+    for path in candidates:
+        if path.exists():
+            return str(path)
+
+    # 4. Last resort — rely on PATH
+    try:
+        result = subprocess.run(
+            ["Rscript", "--version"],
+            capture_output=True, timeout=5,
+        )
+        if result.returncode == 0:
+            return "Rscript"
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        pass
+
+    return None
 
 
-def run_r_script(r_code: str, data_path: str) -> tuple:
+def run_r_script(r_code: str, data_path: str, rscript_path: str | None = None) -> tuple:
     """
     Inject data_path into the R script, run it, capture final_df as CSV.
 
     Args:
-        r_code:     The R script string (must produce `final_df`)
-        data_path:  Absolute path to the dataset file
+        r_code:        The R script string (must produce `final_df`)
+        data_path:     Absolute path to the dataset file
+        rscript_path:  Override path to Rscript.exe (optional)
 
     Returns:
         (success: bool, output_csv_path: str, log: str)
     """
-    rscript_exe = _find_rscript()
+    rscript_exe = rscript_path or _find_rscript()
 
-    # Temp directory for this run
+    if not rscript_exe:
+        return False, "", (
+            "Rscript.exe not found.\n\n"
+            "Please enter the full path to Rscript.exe in the box above.\n"
+            "Default Windows location: C:\\Program Files\\R\\R-x.x.x\\bin\\Rscript.exe"
+        )
+
     tmp_dir = tempfile.mkdtemp(prefix="r_exec_")
-    output_csv = os.path.join(tmp_dir, "final_df.csv")
+    output_csv  = os.path.join(tmp_dir, "final_df.csv")
     script_path = os.path.join(tmp_dir, "generated_script.R")
 
     # R wants forward slashes
-    safe_data_path = data_path.replace("\\", "/")
-    safe_output_csv = output_csv.replace("\\", "/")
+    safe_data_path   = data_path.replace("\\", "/")
+    safe_output_csv  = output_csv.replace("\\", "/")
 
     full_script = (
         '# === INJECTED BY APP ===\n'
-        f'data_path <- "{safe_data_path}"\n'
+        f'data_path   <- "{safe_data_path}"\n'
         f'output_path <- "{safe_output_csv}"\n'
         '# =======================\n\n'
         + r_code
@@ -83,10 +124,11 @@ def run_r_script(r_code: str, data_path: str) -> tuple:
 
     except FileNotFoundError:
         return False, "", (
-            f"Rscript not found at '{rscript_exe}'.\n"
-            "Please ensure R is installed and Rscript.exe is on your PATH."
+            f"Rscript not found at: {rscript_exe}\n\n"
+            "Please enter the full path to Rscript.exe in the box above.\n"
+            "Default Windows location: C:\\Program Files\\R\\R-x.x.x\\bin\\Rscript.exe"
         )
     except subprocess.TimeoutExpired:
         return False, "", "R script timed out after 5 minutes."
     except Exception as e:
-        return False, "", f"Unexpected error: {str(e)}"
+        return False, "", f"Unexpected error: {e}"

@@ -627,12 +627,49 @@ with tab4:
 with tab5:
     st.markdown("## Step 5 · Run R Script & Download Results")
 
+    # ── Sample dataset download ───────────────────────────────────────────────
+    sample_adrs = _sample_bytes("sample_adrs.csv")
+    if sample_adrs:
+        st.info(
+            "**New to the tool?** Use the sample ADRS dataset below — it matches the sample "
+            "AdaM specs (Tab 2) and sample mock shell (Tab 1) exactly.",
+            icon="💡",
+        )
+        st.download_button(
+            label="⬇️ Download sample_adrs.csv (90 subjects · 3 arms · BOR)",
+            data=sample_adrs,
+            file_name="sample_adrs.csv",
+            mime="text/csv",
+            use_container_width=False,
+        )
+        st.divider()
+
     if not st.session_state.r_code:
         st.warning("Complete Step 4 first — generate an R script.")
     else:
         qc = st.session_state.qc_result
         if qc and not qc.get("qc_passed", True):
             st.warning("⚠️ QC found issues. Consider applying QC corrections in Step 4 first.")
+
+        # ── Rscript detection ─────────────────────────────────────────────────
+        from r_executor import _find_rscript
+        _detected = _find_rscript()
+
+        with st.expander("⚙️ Rscript path", expanded=(_detected is None)):
+            if _detected:
+                st.success(f"Rscript detected: `{_detected}`", icon="✅")
+            else:
+                st.error(
+                    "Rscript.exe not found automatically. "
+                    "Enter the full path below.",
+                    icon="❌",
+                )
+            rscript_override = st.text_input(
+                "Override Rscript path (leave blank to use detected path)",
+                value="" if _detected else r"C:\Program Files\R\R-4.5.3\bin\Rscript.exe",
+                placeholder=r"C:\Program Files\R\R-4.x.x\bin\Rscript.exe",
+            )
+        RSCRIPT_PATH = rscript_override.strip() or _detected
 
         st.markdown(
             "Upload your dataset file (or enter its path) and click **Run**. "
@@ -656,6 +693,12 @@ with tab5:
         run_btn = st.button("▶️ Run R Script", type="primary")
 
         if run_btn:
+            if not RSCRIPT_PATH:
+                st.error(
+                    "Rscript path is not set. Expand **⚙️ Rscript path** above and enter the path manually."
+                )
+                st.stop()
+
             resolved_path = ""
             if data_file:
                 import tempfile
@@ -670,7 +713,9 @@ with tab5:
 
             if resolved_path:
                 with st.spinner("Running Rscript… (may take a minute for package installs)"):
-                    success, csv_path, log = run_r_script(st.session_state.r_code, resolved_path)
+                    success, csv_path, log = run_r_script(
+                        st.session_state.r_code, resolved_path, rscript_path=RSCRIPT_PATH
+                    )
                     st.session_state.result_csv_path = csv_path if success else None
                     st.session_state.run_log = log
 
