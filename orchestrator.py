@@ -4,11 +4,7 @@ Also provides a QC agent that reviews the generated code for correctness.
 """
 
 import json
-import os
-from openai import OpenAI
-from dotenv import load_dotenv
-
-load_dotenv()
+from llm_client import call_llm
 
 _BASE_SYSTEM = """
 You are an expert R programmer for clinical trial statistical programming (TLFs).
@@ -64,11 +60,6 @@ If there are no issues, return qc_passed=true, issues=[], corrected_code="".
 """
 
 
-def _get_client(api_key: str | None = None):
-    key = api_key or os.getenv("OPENAI_API_KEY")
-    return OpenAI(api_key=key)
-
-
 def _strip_fences(code: str) -> str:
     if code.startswith("```"):
         parts = code.split("```")
@@ -78,37 +69,18 @@ def _strip_fences(code: str) -> str:
     return code.strip()
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Main code generator
-# ─────────────────────────────────────────────────────────────────────────────
+# ── Main code generator ───────────────────────────────────────────────────────
 def generate_r_script(
     table_json: dict,
     skills_md: str,
     adam_specs: dict | None = None,
     api_key: str | None = None,
+    provider: str = "OpenAI",
+    model: str = "gpt-4o-mini",
 ) -> str:
-    """
-    Call GPT-4o-mini with table JSON + AdaM specs + skills.md to generate R code.
-
-    Args:
-        table_json:  Parsed table structure dict (from mock shell)
-        skills_md:   Content of skills.md
-        adam_specs:  Parsed AdaM specifications dict (may be None for MVP fallback)
-
-    Returns:
-        R script as a string
-    """
-    client = _get_client(api_key)
-    model  = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
-
     adam_section = ""
     if adam_specs:
-        adam_section = f"""
-## AdaM Dataset Specifications (JSON)
-{json.dumps(adam_specs, indent=2)}
-
----
-"""
+        adam_section = f"\n## AdaM Dataset Specifications (JSON)\n{json.dumps(adam_specs, indent=2)}\n\n---\n"
 
     user_message = f"""
 ## Skills Guide (skills.md)
@@ -129,41 +101,26 @@ Generate the R script for this table.
 Output only R code.
 """
 
-    response = client.chat.completions.create(
+    raw = call_llm(
+        system=_BASE_SYSTEM,
+        user=user_message,
+        provider=provider,
         model=model,
-        messages=[
-            {"role": "system", "content": _BASE_SYSTEM},
-            {"role": "user",   "content": user_message},
-        ],
+        api_key=api_key or "",
         max_tokens=3000,
-        temperature=0,
     )
+    return _strip_fences(raw)
 
-    return _strip_fences(response.choices[0].message.content)
 
-
-# ─────────────────────────────────────────────────────────────────────────────
-# QC agent
-# ─────────────────────────────────────────────────────────────────────────────
+# ── QC agent ──────────────────────────────────────────────────────────────────
 def qc_r_script(
     r_code: str,
     table_json: dict,
     adam_specs: dict | None = None,
     api_key: str | None = None,
+    provider: str = "OpenAI",
+    model: str = "gpt-4o-mini",
 ) -> dict:
-    """
-    Run a QC LLM agent on the generated R script.
-
-    Returns:
-        {
-            "qc_passed": bool,
-            "issues": [{"severity", "line_hint", "description"}],
-            "corrected_code": str   # non-empty only when corrections were made
-        }
-    """
-    client = _get_client(api_key)
-    model  = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
-
     adam_section = json.dumps(adam_specs, indent=2) if adam_specs else "Not provided."
 
     user_message = f"""
@@ -181,18 +138,15 @@ def qc_r_script(
 Review the R script and return the QC JSON.
 """
 
-    response = client.chat.completions.create(
+    raw = call_llm(
+        system=_QC_SYSTEM,
+        user=user_message,
+        provider=provider,
         model=model,
-        messages=[
-            {"role": "system", "content": _QC_SYSTEM},
-            {"role": "user",   "content": user_message},
-        ],
+        api_key=api_key or "",
         max_tokens=3000,
-        temperature=0,
     )
 
-    raw = response.choices[0].message.content.strip()
-    # Strip fences if model adds them
     if raw.startswith("```"):
         parts = raw.split("```")
         raw = parts[1]
@@ -200,12 +154,10 @@ Review the R script and return the QC JSON.
             raw = raw[5:]
 
     try:
-        result = json.loads(raw)
+        return json.loads(raw)
     except json.JSONDecodeError:
-        result = {
+        return {
             "qc_passed": False,
-            "issues": [{"severity": "ERROR", "line_hint": "", "description": f"QC agent returned non-JSON response: {raw[:300]}"}],
+            "issues": [{"severity": "ERROR", "line_hint": "", "description": f"QC agent returned non-JSON: {raw[:300]}"}],
             "corrected_code": "",
         }
-
-    return result

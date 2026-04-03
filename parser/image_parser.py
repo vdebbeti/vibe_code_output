@@ -1,14 +1,9 @@
 """
-Parse a PNG/JPG mock shell image using GPT-4o-mini vision.
+Parse a PNG/JPG mock shell image using an LLM vision model.
 Returns a structured JSON dict matching the table chunk schema.
 """
-import base64
 import json
-import os
-from openai import OpenAI
-from dotenv import load_dotenv
-
-load_dotenv()
+from llm_client import call_llm
 
 _SYSTEM_PROMPT = """
 You are a clinical trial table parser. You will receive an image of a mock shell
@@ -40,45 +35,35 @@ Rules:
 - Return ONLY the JSON object. No markdown fences.
 """
 
+_USER_TEXT = "Parse this clinical mock shell table image into the JSON schema."
 
-def parse_png(file_bytes: bytes, api_key: str | None = None) -> dict:
-    """
-    Send PNG bytes to GPT-4o-mini vision and return parsed JSON dict.
-    """
-    client = OpenAI(api_key=api_key or os.getenv("OPENAI_API_KEY"))
-    model = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
 
-    b64 = base64.b64encode(file_bytes).decode("utf-8")
-
-    response = client.chat.completions.create(
-        model=model,
-        messages=[
-            {"role": "system", "content": _SYSTEM_PROMPT},
-            {
-                "role": "user",
-                "content": [
-                    {
-                        "type": "image_url",
-                        "image_url": {
-                            "url": f"data:image/png;base64,{b64}",
-                            "detail": "high",
-                        },
-                    },
-                    {
-                        "type": "text",
-                        "text": "Parse this clinical mock shell table image into the JSON schema.",
-                    },
-                ],
-            },
-        ],
-        max_tokens=2000,
-        temperature=0,
-    )
-
-    raw = response.choices[0].message.content.strip()
-    # Strip markdown fences if the model adds them despite instructions
+def _strip_fences(raw: str) -> str:
     if raw.startswith("```"):
         raw = raw.split("```")[1]
         if raw.startswith("json"):
             raw = raw[4:]
-    return json.loads(raw)
+    return raw.strip()
+
+
+def parse_png(
+    file_bytes: bytes,
+    api_key: str | None = None,
+    provider: str = "OpenAI",
+    model: str = "gpt-4o-mini",
+) -> dict:
+    """Send image bytes to the selected LLM vision model and return parsed JSON dict."""
+    import mimetypes
+    mime = "image/png"
+
+    raw = call_llm(
+        system=_SYSTEM_PROMPT,
+        user=_USER_TEXT,
+        provider=provider,
+        model=model,
+        api_key=api_key or "",
+        image_bytes=file_bytes,
+        image_mime=mime,
+        max_tokens=2000,
+    )
+    return json.loads(_strip_fences(raw))

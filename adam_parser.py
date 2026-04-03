@@ -6,11 +6,7 @@ that the LLM can use alongside the table shell JSON to generate accurate R code.
 
 import io
 import json
-import os
-from openai import OpenAI
-from dotenv import load_dotenv
-
-load_dotenv()
+from llm_client import call_llm
 
 _SYSTEM = """
 You are a clinical data standards expert. You will be given raw text extracted from an
@@ -41,43 +37,36 @@ If any section is not present in the text, return an empty list [] for that fiel
 """
 
 
-def _call_llm(raw_text: str, api_key: str | None = None) -> dict:
-    key    = api_key or os.getenv("OPENAI_API_KEY")
-    client = OpenAI(api_key=key)
-    model  = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
-
-    # Truncate to avoid token overflow; specs can be very long
-    text = raw_text[:12000]
-
-    resp = client.chat.completions.create(
-        model=model,
-        messages=[
-            {"role": "system", "content": _SYSTEM},
-            {"role": "user",   "content": f"Extract AdaM specs JSON from the following text:\n\n{text}"},
-        ],
-        max_tokens=2000,
-        temperature=0,
-    )
-    raw = resp.choices[0].message.content.strip()
-    # Strip fences if present
+def _strip_fences(raw: str) -> str:
     if raw.startswith("```"):
         parts = raw.split("```")
         raw = parts[1]
         if raw.startswith("json\n") or raw.startswith("JSON\n"):
             raw = raw[5:]
-    return json.loads(raw)
+    return raw.strip()
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Excel parser
-# ─────────────────────────────────────────────────────────────────────────────
+def _call_llm(raw_text: str, provider: str, model: str, api_key: str) -> dict:
+    text = raw_text[:12000]  # guard against token overflow
+    raw = call_llm(
+        system=_SYSTEM,
+        user=f"Extract AdaM specs JSON from the following text:\n\n{text}",
+        provider=provider,
+        model=model,
+        api_key=api_key,
+        max_tokens=2000,
+    )
+    return json.loads(_strip_fences(raw))
+
+
+# ── Excel ─────────────────────────────────────────────────────────────────────
 def _extract_excel_text(file_bytes: bytes) -> str:
     import openpyxl
     wb = openpyxl.load_workbook(io.BytesIO(file_bytes), data_only=True)
     lines = []
-    for sheet_name in wb.sheetnames:
-        ws = wb[sheet_name]
-        lines.append(f"\n=== Sheet: {sheet_name} ===")
+    for name in wb.sheetnames:
+        ws = wb[name]
+        lines.append(f"\n=== Sheet: {name} ===")
         for row in ws.iter_rows(values_only=True):
             cells = [str(c) if c is not None else "" for c in row]
             line  = " | ".join(cells).strip(" |")
@@ -86,9 +75,7 @@ def _extract_excel_text(file_bytes: bytes) -> str:
     return "\n".join(lines)
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# PDF parser
-# ─────────────────────────────────────────────────────────────────────────────
+# ── PDF ───────────────────────────────────────────────────────────────────────
 def _extract_pdf_text(file_bytes: bytes) -> str:
     import pdfplumber
     lines = []
@@ -97,17 +84,13 @@ def _extract_pdf_text(file_bytes: bytes) -> str:
             text = page.extract_text()
             if text:
                 lines.append(text)
-            tables = page.extract_tables()
-            for tbl in tables:
+            for tbl in page.extract_tables():
                 for row in tbl:
-                    cells = [c or "" for c in row]
-                    lines.append(" | ".join(cells))
+                    lines.append(" | ".join(c or "" for c in row))
     return "\n".join(lines)
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# DOCX parser
-# ─────────────────────────────────────────────────────────────────────────────
+# ── DOCX ──────────────────────────────────────────────────────────────────────
 def _extract_docx_text(file_bytes: bytes) -> str:
     from docx import Document
     doc = Document(io.BytesIO(file_bytes))
@@ -117,24 +100,33 @@ def _extract_docx_text(file_bytes: bytes) -> str:
             lines.append(para.text)
     for table in doc.tables:
         for row in table.rows:
-            cells = [c.text.strip() for c in row.cells]
-            lines.append(" | ".join(cells))
+            lines.append(" | ".join(c.text.strip() for c in row.cells))
     return "\n".join(lines)
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Public entry points
-# ─────────────────────────────────────────────────────────────────────────────
-def parse_adam_excel(file_bytes: bytes, api_key: str | None = None) -> dict:
-    text = _extract_excel_text(file_bytes)
-    return _call_llm(text, api_key=api_key)
+# ── Public entry points ───────────────────────────────────────────────────────
+def parse_adam_excel(
+    file_bytes: bytes,
+    api_key: str | None = None,
+    provider: str = "OpenAI",
+    model: str = "gpt-4o-mini",
+) -> dict:
+    return _call_llm(_extract_excel_text(file_bytes), provider, model, api_key or "")
 
 
-def parse_adam_pdf(file_bytes: bytes, api_key: str | None = None) -> dict:
-    text = _extract_pdf_text(file_bytes)
-    return _call_llm(text, api_key=api_key)
+def parse_adam_pdf(
+    file_bytes: bytes,
+    api_key: str | None = None,
+    provider: str = "OpenAI",
+    model: str = "gpt-4o-mini",
+) -> dict:
+    return _call_llm(_extract_pdf_text(file_bytes), provider, model, api_key or "")
 
 
-def parse_adam_docx(file_bytes: bytes, api_key: str | None = None) -> dict:
-    text = _extract_docx_text(file_bytes)
-    return _call_llm(text, api_key=api_key)
+def parse_adam_docx(
+    file_bytes: bytes,
+    api_key: str | None = None,
+    provider: str = "OpenAI",
+    model: str = "gpt-4o-mini",
+) -> dict:
+    return _call_llm(_extract_docx_text(file_bytes), provider, model, api_key or "")

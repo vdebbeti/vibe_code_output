@@ -1,15 +1,11 @@
 """
 Parse a DOCX mock shell using python-docx to extract table text,
-then send to GPT-4o-mini for JSON structuring.
+then send to the selected LLM for JSON structuring.
 """
 import json
-import os
 import io
-from openai import OpenAI
-from dotenv import load_dotenv
 import docx
-
-load_dotenv()
+from llm_client import call_llm
 
 _SYSTEM_PROMPT = """
 You are a clinical trial table parser. You will receive raw text extracted from a
@@ -40,55 +36,43 @@ Rules:
 """
 
 
-def _extract_text_from_docx(file_bytes: bytes) -> str:
-    """Extract all table content and paragraph text from a DOCX file."""
+def _extract_text(file_bytes: bytes) -> str:
     doc = docx.Document(io.BytesIO(file_bytes))
     lines = []
-
-    # Extract paragraphs (title, footnotes, etc.)
     for para in doc.paragraphs:
-        text = para.text.strip()
-        if text:
-            lines.append(text)
-
-    # Extract tables
-    for table_idx, table in enumerate(doc.tables):
-        lines.append(f"\n--- TABLE {table_idx + 1} ---")
+        if para.text.strip():
+            lines.append(para.text)
+    for idx, table in enumerate(doc.tables):
+        lines.append(f"\n--- TABLE {idx + 1} ---")
         for row in table.rows:
-            cells = [cell.text.strip() for cell in row.cells]
-            lines.append(" | ".join(cells))
-
+            lines.append(" | ".join(c.text.strip() for c in row.cells))
     return "\n".join(lines)
 
 
-def parse_docx(file_bytes: bytes, api_key: str | None = None) -> dict:
-    """
-    Extract text from DOCX and send to GPT-4o-mini for JSON structuring.
-    """
-    client = OpenAI(api_key=api_key or os.getenv("OPENAI_API_KEY"))
-    model = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
-
-    extracted_text = _extract_text_from_docx(file_bytes)
-
-    response = client.chat.completions.create(
-        model=model,
-        messages=[
-            {"role": "system", "content": _SYSTEM_PROMPT},
-            {
-                "role": "user",
-                "content": (
-                    "Parse this clinical mock shell table (extracted from Word/DOCX) "
-                    "into the JSON schema:\n\n" + extracted_text
-                ),
-            },
-        ],
-        max_tokens=2000,
-        temperature=0,
-    )
-
-    raw = response.choices[0].message.content.strip()
+def _strip_fences(raw: str) -> str:
     if raw.startswith("```"):
         raw = raw.split("```")[1]
         if raw.startswith("json"):
             raw = raw[4:]
-    return json.loads(raw)
+    return raw.strip()
+
+
+def parse_docx(
+    file_bytes: bytes,
+    api_key: str | None = None,
+    provider: str = "OpenAI",
+    model: str = "gpt-4o-mini",
+) -> dict:
+    extracted = _extract_text(file_bytes)
+    raw = call_llm(
+        system=_SYSTEM_PROMPT,
+        user=(
+            "Parse this clinical mock shell table (extracted from Word/DOCX) "
+            "into the JSON schema:\n\n" + extracted
+        ),
+        provider=provider,
+        model=model,
+        api_key=api_key or "",
+        max_tokens=2000,
+    )
+    return json.loads(_strip_fences(raw))

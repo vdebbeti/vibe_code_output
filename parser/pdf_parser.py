@@ -1,15 +1,11 @@
 """
 Parse a PDF mock shell using pdfplumber to extract table text,
-then send to GPT-4o-mini for JSON structuring.
+then send to the selected LLM for JSON structuring.
 """
 import json
-import os
 import io
-from openai import OpenAI
-from dotenv import load_dotenv
 import pdfplumber
-
-load_dotenv()
+from llm_client import call_llm
 
 _SYSTEM_PROMPT = """
 You are a clinical trial table parser. You will receive raw text extracted from a
@@ -40,59 +36,49 @@ Rules:
 """
 
 
-def _extract_text_from_pdf(file_bytes: bytes) -> str:
-    """Extract all text and table content from a PDF file."""
+def _extract_text(file_bytes: bytes) -> str:
     lines = []
     with pdfplumber.open(io.BytesIO(file_bytes)) as pdf:
-        for page_num, page in enumerate(pdf.pages):
-            lines.append(f"\n--- PAGE {page_num + 1} ---")
-
-            # Try structured table extraction first
+        for num, page in enumerate(pdf.pages):
+            lines.append(f"\n--- PAGE {num + 1} ---")
             tables = page.extract_tables()
             if tables:
-                for table_idx, table in enumerate(tables):
-                    lines.append(f"\n-- Table {table_idx + 1} --")
-                    for row in table:
+                for i, tbl in enumerate(tables):
+                    lines.append(f"\n-- Table {i + 1} --")
+                    for row in tbl:
                         if row:
-                            cells = [str(cell).strip() if cell else "" for cell in row]
-                            lines.append(" | ".join(cells))
+                            lines.append(" | ".join(str(c).strip() if c else "" for c in row))
             else:
-                # Fall back to raw text extraction
                 text = page.extract_text()
                 if text:
                     lines.append(text)
-
     return "\n".join(lines)
 
 
-def parse_pdf(file_bytes: bytes, api_key: str | None = None) -> dict:
-    """
-    Extract text from PDF and send to GPT-4o-mini for JSON structuring.
-    """
-    client = OpenAI(api_key=api_key or os.getenv("OPENAI_API_KEY"))
-    model = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
-
-    extracted_text = _extract_text_from_pdf(file_bytes)
-
-    response = client.chat.completions.create(
-        model=model,
-        messages=[
-            {"role": "system", "content": _SYSTEM_PROMPT},
-            {
-                "role": "user",
-                "content": (
-                    "Parse this clinical mock shell table (extracted from PDF) "
-                    "into the JSON schema:\n\n" + extracted_text
-                ),
-            },
-        ],
-        max_tokens=2000,
-        temperature=0,
-    )
-
-    raw = response.choices[0].message.content.strip()
+def _strip_fences(raw: str) -> str:
     if raw.startswith("```"):
         raw = raw.split("```")[1]
         if raw.startswith("json"):
             raw = raw[4:]
-    return json.loads(raw)
+    return raw.strip()
+
+
+def parse_pdf(
+    file_bytes: bytes,
+    api_key: str | None = None,
+    provider: str = "OpenAI",
+    model: str = "gpt-4o-mini",
+) -> dict:
+    extracted = _extract_text(file_bytes)
+    raw = call_llm(
+        system=_SYSTEM_PROMPT,
+        user=(
+            "Parse this clinical mock shell table (extracted from PDF) "
+            "into the JSON schema:\n\n" + extracted
+        ),
+        provider=provider,
+        model=model,
+        api_key=api_key or "",
+        max_tokens=2000,
+    )
+    return json.loads(_strip_fences(raw))
