@@ -108,12 +108,17 @@ def run_r_script(r_code: str, data_path: str, rscript_path: str | None = None) -
     with open(script_path, "w", encoding="utf-8") as f:
         f.write(full_script)
 
+    # Use shell=True with a quoted command string so Windows cmd.exe handles
+    # path resolution — this avoids Git Bash / MSYS2 subprocess path issues.
+    cmd = f'"{rscript_exe}" --vanilla "{script_path}"'
+
     try:
         result = subprocess.run(
-            [rscript_exe, "--vanilla", script_path],
+            cmd,
             capture_output=True,
             text=True,
             timeout=300,
+            shell=True,          # lets cmd.exe resolve the Windows path
         )
         log = result.stdout + "\n" + result.stderr
 
@@ -122,12 +127,6 @@ def run_r_script(r_code: str, data_path: str, rscript_path: str | None = None) -
         else:
             return False, "", log
 
-    except FileNotFoundError:
-        return False, "", (
-            f"Rscript not found at: {rscript_exe}\n\n"
-            "Please enter the full path to Rscript.exe in the box above.\n"
-            "Default Windows location: C:\\Program Files\\R\\R-x.x.x\\bin\\Rscript.exe"
-        )
     except subprocess.TimeoutExpired:
         return False, "", "R script timed out after 5 minutes."
     except Exception as e:
