@@ -4,7 +4,6 @@ Also provides a QC agent that reviews the generated code for correctness.
 """
 
 import json
-import platform
 from llm_client import call_llm
 
 _BASE_SYSTEM = """
@@ -13,7 +12,6 @@ You will be given:
   1. A JSON object describing the table structure (parsed mock shell)
   2. An AdaM specifications JSON describing the dataset variables, codelists, and analysis conditions
   3. A skills guide (skills.md) defining the R coding patterns and packages to use
-  4. The current deployment environment (Windows or Streamlit Cloud Linux)
 
 Your job is to generate a complete, executable R script that produces
 a data frame named `final_df` matching the table structure.
@@ -22,30 +20,51 @@ STRICT RULES:
 - Output ONLY valid R code — no markdown, no explanation, no fences
 - The script must be self-contained and runnable via Rscript
 - Use the `data_path` variable — it will be injected before execution
+- Always include the package auto-install block (SKILL 1 from skills guide)
 - Always name the final output object `final_df`
 - Do NOT include pharmaRTF, RTF, or any file-writing code
-- Use the exact variable names from the AdaM specs JSON
-- Apply population flags and PARAMCD filters from the AdaM specs JSON
-- Choose the correct SKILL(s) from the skills guide based on the table type
-
-DEPLOYMENT RULE:
-- If running on Streamlit Cloud (Linux), packages are pre-installed via packages.txt.
-  → NEVER include any install.packages() calls or auto-install logic.
-  → Only use library() statements.
-- On local Windows you may include the auto-install block from SKILL 1.
+- Use the exact variable names from the AdaM specs JSON (analysis_var, treatment_variable)
+- Apply population flags from the AdaM specs JSON (e.g. FASFL='Y')
+- Apply PARAMCD filter from analysis_conditions in the AdaM specs JSON
+- Choose the correct SKILL(s) from the guide based on the table type
 """
 
 _QC_SYSTEM = """
 You are a senior clinical statistical programming QC reviewer.
-... (unchanged - your original QC system prompt) ...
-"""   # ← I kept your QC_SYSTEM exactly as you wrote it
+You will be given:
+  1. A generated R script
+  2. The table shell JSON (what the output should look like)
+  3. The AdaM specifications JSON (variable names, codelists, conditions)
+
+Your job is to review the R script and identify any issues. Check for:
+  - Incorrect or invented variable names (must match AdaM specs exactly)
+  - Missing population flag filters (e.g. FASFL='Y', ANL01FL='Y')
+  - Missing or wrong PARAMCD filter
+  - Wrong treatment variable (TRTP vs TRTA vs TRT01P)
+  - Wrong Tplyr function (group_desc vs group_count)
+  - Missing add_total_group() when a Total column is specified
+  - Missing set_distinct_by(USUBJID) for AE tables
+  - final_df not being created or not being a flat data frame
+  - Any R syntax errors you can spot
+
+Return a JSON object with this exact schema — no markdown fences:
+{
+  "qc_passed": true/false,
+  "issues": [
+    {"severity": "ERROR|WARNING|INFO", "line_hint": "<fragment of code near the issue>", "description": "<what is wrong and how to fix it>"}
+  ],
+  "corrected_code": "<full corrected R script, or empty string if no corrections needed>"
+}
+
+If there are no issues, return qc_passed=true, issues=[], corrected_code="".
+"""
 
 
 def _strip_fences(code: str) -> str:
     if code.startswith("```"):
         parts = code.split("```")
-        code = parts[1] if len(parts) > 1 else code
-        if code.startswith(("r\n", "R\n")):
+        code = parts[1]
+        if code.startswith("r\n") or code.startswith("R\n"):
             code = code[2:]
     return code.strip()
 
@@ -59,20 +78,6 @@ def generate_r_script(
     provider: str = "OpenAI",
     model: str = "gpt-4o-mini",
 ) -> str:
-    # Detect environment once
-    is_cloud = platform.system() == "Linux"
-
-    deployment_note = (
-        "\n**DEPLOYMENT ENVIRONMENT (IMPORTANT):** "
-        "This script will run on **Streamlit Cloud (Linux)**. "
-        "All required R packages are already pre-installed via packages.txt. "
-        "DO NOT include any install.packages() calls or auto-install block. "
-        "Just use library(package_name) and assume the packages are available.\n"
-        if is_cloud
-        else "\n**DEPLOYMENT ENVIRONMENT:** Running locally on Windows. "
-             "You may include the package auto-install block from SKILL 1 if desired.\n"
-    )
-
     adam_section = ""
     if adam_specs:
         adam_section = f"\n## AdaM Dataset Specifications (JSON)\n{json.dumps(adam_specs, indent=2)}\n\n---\n"
@@ -81,7 +86,7 @@ def generate_r_script(
 ## Skills Guide (skills.md)
 {skills_md}
 
----{deployment_note}
+---
 
 ## Table Shell Specification (JSON)
 {json.dumps(table_json, indent=2)}
@@ -91,7 +96,7 @@ def generate_r_script(
 Generate the R script for this table.
 - Use `data_path` as the variable holding the path to the dataset file.
 - Apply all population filters and PARAMCD conditions from the AdaM specs.
-- Use exact variable names from the AdaM specs.
+- Use exact variable names from the AdaM specs key_variables section.
 - Choose the correct SKILL(s) from the guide above.
 Output only R code.
 """
@@ -107,7 +112,7 @@ Output only R code.
     return _strip_fences(raw)
 
 
-# ── QC agent (unchanged) ──────────────────────────────────────────────────────
+# ── QC agent ──────────────────────────────────────────────────────────────────
 def qc_r_script(
     r_code: str,
     table_json: dict,
@@ -122,3 +127,37 @@ def qc_r_script(
 ## R Script to Review
 ```r
 {r_code}
+```
+
+## Table Shell JSON
+{json.dumps(table_json, indent=2)}
+
+## AdaM Specifications JSON
+{adam_section}
+
+Review the R script and return the QC JSON.
+"""
+
+    raw = call_llm(
+        system=_QC_SYSTEM,
+        user=user_message,
+        provider=provider,
+        model=model,
+        api_key=api_key or "",
+        max_tokens=3000,
+    )
+
+    if raw.startswith("```"):
+        parts = raw.split("```")
+        raw = parts[1]
+        if raw.startswith("json\n"):
+            raw = raw[5:]
+
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError:
+        return {
+            "qc_passed": False,
+            "issues": [{"severity": "ERROR", "line_hint": "", "description": f"QC agent returned non-JSON: {raw[:300]}"}],
+            "corrected_code": "",
+        }
