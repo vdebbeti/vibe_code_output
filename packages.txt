@@ -1,0 +1,10 @@
+r-base
+r-base-dev
+r-cran-ggplot2
+r-cran-dplyr
+r-cran-cowplot
+r-cran-tplyr
+r-cran-haven
+r-cran-tidyr
+r-cran-stringr
+

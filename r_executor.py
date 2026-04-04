@@ -2,129 +2,82 @@
 R Executor: injects data_path into the R script and runs it via Rscript.
 Captures final_df as a CSV.
 
-Execution strategy (in order):
-  1. subprocess.run([COMSPEC, '/c', rscript_exe, ...], shell=False)
-     - COMSPEC = C:/WINDOWS/system32/cmd.exe (no spaces -> CreateProcess finds it)
-     - cmd.exe then handles Rscript path that may have spaces
-     - Works regardless of whether the parent Python uses /bin/sh or cmd.exe
-  2. subprocess.run([rscript_exe, ...], shell=False) -- direct Windows CreateProcess
-  3. subprocess.run(cmd_str, shell=True) -- last resort
+Works on:
+- Streamlit Cloud (Linux) → after you add packages.txt
+- Local Windows → if R is installed and Rscript is in PATH
 """
+
 import os
 import subprocess
 import tempfile
+import shutil
+import platform
 from pathlib import Path
 
 
-# ── Rscript finder ────────────────────────────────────────────────────────────
+# ── Rscript finder (now cross-platform) ─────────────────────────────────────
 def _find_rscript() -> str | None:
     """
-    Return the full Windows path to Rscript.exe, or None if not found.
-    Tries: registry → common install dirs → PATH.
+    Return the path to Rscript (or 'Rscript' if it's in PATH).
+    Works on Linux (Streamlit Cloud) and Windows.
     """
-    candidates: list[str] = []
+    # 1. Check PATH first (this is what Streamlit Cloud uses after r-base is installed)
+    rscript = shutil.which("Rscript")   # finds Rscript or Rscript.exe automatically
+    if rscript:
+        return rscript
 
-    # 1. Windows registry (most authoritative)
-    try:
-        import winreg
-        for root in (winreg.HKEY_LOCAL_MACHINE, winreg.HKEY_CURRENT_USER):
-            for sub in (
-                r"SOFTWARE\R-core\R",
-                r"SOFTWARE\WOW6432Node\R-core\R",
-            ):
+    # 2. Windows fallback (only if not in PATH)
+    if platform.system() == "Windows":
+        # Keep your original registry + common paths logic if you want
+        # (but most users have Rscript in PATH after install, so this is rarely hit)
+        candidates = []
+        try:
+            import winreg
+            for root in (winreg.HKEY_LOCAL_MACHINE, winreg.HKEY_CURRENT_USER):
+                for sub in (r"SOFTWARE\R-core\R", r"SOFTWARE\WOW6432Node\R-core\R"):
+                    try:
+                        with winreg.OpenKey(root, sub) as key:
+                            install_path, _ = winreg.QueryValueEx(key, "InstallPath")
+                            candidates.append(os.path.join(install_path, "bin", "Rscript.exe"))
+                    except (FileNotFoundError, OSError):
+                        pass
+        except ImportError:
+            pass
+
+        for base in [r"C:\Program Files\R", r"C:\Program Files (x86)\R",
+                     os.path.expanduser(r"~\AppData\Local\Programs\R")]:
+            if os.path.isdir(base):
                 try:
-                    with winreg.OpenKey(root, sub) as key:
-                        install_path, _ = winreg.QueryValueEx(key, "InstallPath")
-                        candidates.append(
-                            os.path.join(install_path, "bin", "Rscript.exe")
-                        )
-                except (FileNotFoundError, OSError):
+                    for ver in sorted(os.listdir(base), reverse=True):
+                        for sub in ("bin\\Rscript.exe", "bin\\x64\\Rscript.exe"):
+                            p = os.path.join(base, ver, sub)
+                            candidates.append(p)
+                except OSError:
                     pass
-    except ImportError:
-        pass
 
-    # 2. Enumerate C:\Program Files\R\ (and x86 variant)
-    for base_str in [
-        r"C:\Program Files\R",
-        r"C:\Program Files (x86)\R",
-        os.path.expanduser(r"~\AppData\Local\Programs\R"),
-    ]:
-        if os.path.isdir(base_str):
-            try:
-                for ver in sorted(os.listdir(base_str), reverse=True):
-                    for sub in ("bin\\Rscript.exe", "bin\\x64\\Rscript.exe"):
-                        candidates.append(os.path.join(base_str, ver, sub))
-            except OSError:
-                pass
-
-    # Return first path that actually exists on disk
-    for p in candidates:
-        if os.path.isfile(p):
-            return p
-
-    # 3. Try 'Rscript' on PATH
-    try:
-        r = subprocess.run(
-            ["Rscript", "--version"],
-            capture_output=True, timeout=5,
-        )
-        if r.returncode == 0:
-            return "Rscript"
-    except (FileNotFoundError, subprocess.TimeoutExpired):
-        pass
+        for p in candidates:
+            if os.path.isfile(p):
+                return p
 
     return None
 
 
-# ── Subprocess runner (the key fix) ──────────────────────────────────────────
+# ── Simple subprocess runner (no more Windows-only COMSPEC hacks) ─────────────
 def _run_rscript(rscript_exe: str, script_path: str, timeout: int = 300):
     """
-    Run Rscript.exe reliably even when the parent Python is inside Git Bash /
-    MSYS2 (where shell=True uses /bin/sh instead of cmd.exe).
-
-    Strategy: call COMSPEC (cmd.exe) explicitly with shell=False.
-    - C:\\Windows\\system32\\cmd.exe has NO spaces → CreateProcess finds it.
-    - cmd.exe receives the Rscript path (which may have spaces) as a quoted arg.
-    - No dependency on the SHELL env var.
+    Run Rscript with a clean list-of-args call.
+    Works on both Linux and Windows. No shell=True, no COMSPEC needed.
     """
-    comspec = os.environ.get("COMSPEC", r"C:\Windows\System32\cmd.exe")
-
-    # Primary: route through cmd.exe (always works on Windows even in Git Bash)
-    try:
-        return subprocess.run(
-            [comspec, "/c", rscript_exe, "--vanilla", script_path],
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-            shell=False,
-        )
-    except (FileNotFoundError, OSError):
-        pass
-
-    # Fallback 1: direct CreateProcess (works if not in Git Bash context)
-    try:
-        return subprocess.run(
-            [rscript_exe, "--vanilla", script_path],
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-            shell=False,
-        )
-    except (FileNotFoundError, OSError):
-        pass
-
-    # Fallback 2: shell=True as last resort
-    cmd_str = f'"{rscript_exe}" --vanilla "{script_path}"'
     return subprocess.run(
-        cmd_str,
+        [rscript_exe, "--vanilla", script_path],
         capture_output=True,
         text=True,
         timeout=timeout,
-        shell=True,
+        # shell=False is default when passing a list
     )
 
 
-# ── Public API ────────────────────────────────────────────────────────────────
+# ── Public API (almost unchanged, just much more reliable) ───────────────────
 def run_r_script(
     r_code: str,
     data_path: str,
@@ -136,21 +89,35 @@ def run_r_script(
     Returns:
         (success: bool, output_csv_path: str, log: str)
     """
+    # Use user-provided path if given, otherwise auto-detect
     rscript_exe = rscript_path or _find_rscript()
 
     if not rscript_exe:
-        return False, "", (
-            "Rscript.exe not found.\n\n"
-            "Expand ⚙️ Rscript path above and paste the full path.\n"
-            r"Typical location: C:\Program Files\R\R-x.x.x\bin\Rscript.exe"
-        )
+        if platform.system() == "Linux":
+            error_msg = (
+                "Rscript not found on Streamlit Cloud.\n\n"
+                "✅ Fix: Create a file named packages.txt in the root of your GitHub repo with:\n"
+                "r-base\n"
+                "r-base-dev\n"
+                "(and any r-cran-xxx packages your script uses)\n\n"
+                "Then redeploy. Rscript will be installed and available in PATH."
+            )
+        else:
+            error_msg = (
+                "Rscript.exe not found.\n\n"
+                "1. Make sure R is installed.\n"
+                "2. Add R to your PATH, or\n"
+                "3. Paste the full path to Rscript.exe in the ⚙️ setting.\n"
+                "Typical: C:\\Program Files\\R\\R-x.x.x\\bin\\Rscript.exe"
+            )
+        return False, "", error_msg
 
     tmp_dir = tempfile.mkdtemp(prefix="r_exec_")
-    output_csv  = os.path.join(tmp_dir, "final_df.csv")
+    output_csv = os.path.join(tmp_dir, "final_df.csv")
     script_path = os.path.join(tmp_dir, "generated_script.R")
 
-    # R prefers forward slashes in paths
-    safe_data   = data_path.replace("\\", "/")
+    # R works with forward slashes on both Windows and Linux
+    safe_data = data_path.replace("\\", "/")
     safe_output = output_csv.replace("\\", "/")
 
     full_script = (
