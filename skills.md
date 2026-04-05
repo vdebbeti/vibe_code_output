@@ -90,6 +90,7 @@ final_df <- t %>% build()
 - Add one `add_layer()` per row in the JSON `rows` array.
 - Use `group_desc()` for continuous stats (Mean, SD, Median, Min, Max).
 - Use `group_count()` for categorical stats (n, %).
+- **`by` parameter in demographics**: `by = "Age (Years)"` is a valid **section header string** for `group_desc()` because AGE is continuous and the string is just a display label — this is the ONE valid use of string `by`. For `group_count()` on categorical variables (SEX, RACE), string `by` is also valid as a section header only if the variable has a natural label. Do NOT pass string `by` as if it filters rows — Tplyr's `by` is a grouping/nesting variable or a display header, never a row filter.
 
 ---
 
@@ -190,37 +191,61 @@ t <- tplyr_table(adsl, TRTP) %>%
 
 ## SKILL 9: Oncology Response Rate Tables (ADRS / BOR)
 **Condition**: `dataset_source` is "ADRS" OR title contains "Response", "ORR", "Tumor", "BOR"
-**Action**: Filter on PARAMCD, apply population flags, use `group_count()` for categories and a derived binary flag for ORR/DCR.
+**Action**: Filter on PARAMCD, apply population flags. Use ONE `group_count()` layer per categorical variable — Tplyr automatically creates one row per unique value.
+
+### CRITICAL TPLYR RULES — READ BEFORE WRITING ANY CODE:
+1. **`by` parameter ONLY accepts DATA VARIABLE names** (e.g., `by = RACE`) — NEVER pass a string label like `by = "Best Overall Response"`. String `by` values cause `assert_quo_var_present` runtime errors.
+2. **ONE layer per analysis variable** — do NOT create separate layers for each category (CR, PR, SD, etc.). Tplyr auto-enumerates all unique values in `AVALC` into separate rows automatically.
+3. **Never do this** (WRONG — creates 8 layers with string labels):
+   ```r
+   # WRONG — do not copy this pattern
+   add_layer(group_count(AVALC, by = "Best Overall Response") %>% ...)
+   add_layer(group_count(AVALC, by = "Complete Response (CR)") %>% ...)
+   add_layer(group_count(AVALC, by = "Partial Response (PR)") %>% ...)
+   ```
 
 ```r
 # Apply population filter and PARAMCD filter from AdaM specs
 adrs <- adrs %>%
   filter(FASFL == "Y", ANL01FL == "Y", PARAMCD == "BOR")
 
-# Best Overall Response — categorical counts
+# Best Overall Response — ONE layer; Tplyr auto-creates one row per AVALC value (CR, PR, SD, PD, NE)
 t_bor <- tplyr_table(adrs, TRTP) %>%
   add_total_group() %>%
   add_layer(
-    group_count(AVALC, by = "Best Overall Response") %>%
+    group_count(AVALC) %>%
       set_format_strings("n (%)" = f_str("xx (xx.x%)", n, pct)) %>%
       set_distinct_by(USUBJID)
   )
 
-# Overall Response Rate (CR + PR)
-adrs_orr <- adrs %>% mutate(ORR_FLAG = if_else(AVALC %in% c("CR", "PR"), "Responder", "Non-Responder"))
+# Overall Response Rate (CR + PR) — derive a binary flag, then ONE layer
+adrs_orr <- adrs %>%
+  mutate(ORR_FLAG = if_else(AVALC %in% c("CR", "PR"), "Responder", "Non-Responder"))
 t_orr <- tplyr_table(adrs_orr, TRTP) %>%
   add_total_group() %>%
   add_layer(
-    group_count(ORR_FLAG, by = "Overall Response Rate") %>%
+    group_count(ORR_FLAG) %>%
       set_format_strings("n (%)" = f_str("xx (xx.x%)", n, pct)) %>%
       set_distinct_by(USUBJID)
   )
 
-final_df <- bind_rows(t_bor %>% build(), t_orr %>% build())
+# Disease Control Rate (CR + PR + SD)
+adrs_dcr <- adrs %>%
+  mutate(DCR_FLAG = if_else(AVALC %in% c("CR", "PR", "SD"), "Controlled", "Not Controlled"))
+t_dcr <- tplyr_table(adrs_dcr, TRTP) %>%
+  add_total_group() %>%
+  add_layer(
+    group_count(DCR_FLAG) %>%
+      set_format_strings("n (%)" = f_str("xx (xx.x%)", n, pct)) %>%
+      set_distinct_by(USUBJID)
+  )
+
+final_df <- bind_rows(t_bor %>% build(), t_orr %>% build(), t_dcr %>% build())
 ```
 - Always use `set_distinct_by(USUBJID)` to count unique subjects
 - ORR = AVALC in ('CR', 'PR'); DCR = AVALC in ('CR', 'PR', 'SD')
 - Apply `FASFL == 'Y'` and `ANL01FL == 'Y'` from AdaM specs population_flags
+- If the table only needs BOR, use only `t_bor`; omit ORR/DCR tables if not required by the JSON
 
 ---
 

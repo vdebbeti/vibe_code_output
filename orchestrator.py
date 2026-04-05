@@ -1,34 +1,119 @@
 """
-Orchestrator: generates R code from table JSON + AdaM specs JSON + skills.md
-Also provides a QC agent that reviews the generated code for correctness.
+Orchestrator: generates R code from table JSON + AdaM specs JSON.
+
+Pipeline:
+  1. generate_r_recipe()   — LLM produces a structured JSON recipe (no free-form R)
+  2. assemble_r_from_recipe() — Python deterministically assembles valid R code from the recipe
+  3. fix_r_script()        — if execution fails, LLM fixes the broken code (Option A retry)
+
+This two-step approach prevents Tplyr API misuse by construction:
+  - `by` parameter is always a data column name or null (never a string label)
+  - One layer per analysis variable (never one layer per category)
+  - Package block, load, filters, derived vars are assembled from structured fields
 """
 
 import json
 from llm_client import call_llm
 
-_BASE_SYSTEM = """
-You are an expert R programmer for clinical trial statistical programming (TLFs).
-You will be given:
-  1. A JSON object describing the table structure (parsed mock shell)
-  2. An AdaM specifications JSON describing the dataset variables, codelists, and analysis conditions
-  3. A skills guide (skills.md) defining the R coding patterns and packages to use
+# ── Package auto-install block (always prepended to every script) ─────────────
+_PACKAGE_BLOCK = r"""# Auto-install required packages (writable user library for restricted environments)
+local_lib <- path.expand("~/R/library")
+dir.create(local_lib, recursive = TRUE, showWarnings = FALSE)
+locks <- list.files(local_lib, pattern = "^00LOCK-", full.names = TRUE)
+unlink(locks, recursive = TRUE)
+.libPaths(c(local_lib, .libPaths()))
 
-Your job is to generate a complete, executable R script that produces
-a data frame named `final_df` matching the table structure.
+pkgs <- c("Tplyr", "dplyr", "haven", "stringr", "tidyr")
+for (pkg in pkgs) {
+  if (!requireNamespace(pkg, quietly = TRUE)) {
+    install.packages(pkg,
+      repos        = "https://cloud.r-project.org",
+      lib          = local_lib,
+      dependencies = c("Depends", "Imports", "LinkingTo"),
+      INSTALL_opts = "--no-lock",
+      Ncpus        = 1L)
+  }
+}
+library(Tplyr)
+library(dplyr)
+library(haven)
+library(stringr)
+library(tidyr)"""
 
-STRICT RULES:
-- Output ONLY valid R code — no markdown, no explanation, no fences
-- The script must be self-contained and runnable via Rscript
-- Use the `data_path` variable — it will be injected before execution
-- Always include the package auto-install block (SKILL 1 from skills guide) — use a writable user library path via path.expand("~/R/library") and pass lib= to install.packages()
-- Always name the final output object `final_df`
-- Do NOT include pharmaRTF, RTF, or any file-writing code
-- Use the exact variable names from the AdaM specs JSON (analysis_var, treatment_variable)
-- Apply population flags from the AdaM specs JSON (e.g. FASFL='Y')
-- Apply PARAMCD filter from analysis_conditions in the AdaM specs JSON
-- Choose the correct SKILL(s) from the guide based on the table type
+# ── Recipe system prompt ──────────────────────────────────────────────────────
+_RECIPE_SYSTEM = """
+You are a clinical R/SAS statistical programmer. Given a table shell JSON and AdaM specs,
+produce a structured R recipe JSON that describes exactly how to build the table.
+
+RECIPE JSON SCHEMA:
+{
+  "approach": "tplyr",
+  "dataset_var": "<R variable name, e.g. adsl, adae, adrs>",
+  "pre_filters": ["<R filter expression, e.g. FASFL == 'Y'">],
+  "derived_vars": [
+    {
+      "dataset_var": "<R variable to mutate>",
+      "name": "<new column name>",
+      "expr": "<R expression>"
+    }
+  ],
+  "tables": [
+    {
+      "table_var": "t1",
+      "dataset_var": "<R variable name for this table>",
+      "treatment_var": "<column name, e.g. TRTP>",
+      "add_total": true,
+      "layers": [
+        {
+          "type": "group_desc",
+          "var": "<continuous column name>",
+          "nested_var": null,
+          "by_var": null,
+          "distinct_by": null,
+          "stats": ["n", "mean", "sd", "median", "min", "max"]
+        },
+        {
+          "type": "group_count",
+          "var": "<categorical column name>",
+          "nested_var": null,
+          "by_var": null,
+          "distinct_by": "USUBJID"
+        }
+      ]
+    }
+  ],
+  "combine_method": "bind_rows"
+}
+
+ABSOLUTE RULES — THESE ARE NON-NEGOTIABLE:
+
+1. "by_var" MUST be a data column name (e.g. "RACE") or null.
+   NEVER set by_var to a string label like "Best Overall Response" or "Age (Years)".
+   String labels are NOT valid Tplyr by_var values and will cause runtime errors.
+
+2. ONE layer per analysis variable.
+   NEVER create separate layers for each category of a variable.
+   BAD:  8 layers all with var="AVALC" but different string by_var labels
+   GOOD: 1 layer with var="AVALC", by_var=null — Tplyr auto-creates one row per unique value
+
+3. AE/SOC-PT tables: var="AEBODSYS", nested_var="AEDECOD", distinct_by="USUBJID"
+
+4. Response/efficacy tables (BOR, ORR, DCR):
+   - For AVALC categories: 1 layer, var="AVALC", by_var=null, distinct_by="USUBJID"
+   - For derived flags (ORR=CR+PR, DCR=CR+PR+SD): add entry to derived_vars first,
+     then use the new derived column name in a separate table's layer
+
+5. Survival/KM tables: set "approach": "survival"
+
+6. Use treatment_variable from AdaM specs (TRTP / TRTA / TRT01P) exactly as specified
+
+7. "combine_method" is "bind_rows" when stacking tables vertically,
+   "bind_cols" when merging side-by-side (e.g. severity columns)
+
+8. Output ONLY valid JSON — no markdown fences, no explanation text
 """
 
+# ── QC system prompt ──────────────────────────────────────────────────────────
 _QC_SYSTEM = """
 You are a senior clinical statistical programming QC reviewer.
 You will be given:
@@ -69,7 +154,258 @@ def _strip_fences(code: str) -> str:
     return code.strip()
 
 
-# ── Main code generator ───────────────────────────────────────────────────────
+# ── Option C: Recipe generation ───────────────────────────────────────────────
+
+def generate_r_recipe(
+    table_json: dict,
+    adam_specs: dict | None = None,
+    api_key: str = "",
+    provider: str = "OpenAI",
+    model: str = "gpt-4o-mini",
+) -> dict:
+    """
+    Ask the LLM to produce a structured recipe JSON describing the R table.
+    The recipe is then passed to assemble_r_from_recipe() for deterministic code generation.
+    """
+    adam_section = ""
+    if adam_specs:
+        adam_section = f"\n\n## AdaM Specifications\n{json.dumps(adam_specs, indent=2)}"
+
+    user_msg = (
+        f"## Table Shell JSON\n{json.dumps(table_json, indent=2)}"
+        f"{adam_section}\n\n"
+        "Produce the R recipe JSON for this table. Output only valid JSON."
+    )
+
+    raw = call_llm(
+        system=_RECIPE_SYSTEM,
+        user=user_msg,
+        provider=provider,
+        model=model,
+        api_key=api_key,
+        max_tokens=2000,
+    )
+
+    raw = raw.strip()
+    if raw.startswith("```"):
+        parts = raw.split("```")
+        raw = parts[1]
+        if raw.startswith("json\n"):
+            raw = raw[5:]
+        raw = raw.strip()
+
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError as e:
+        raise ValueError(
+            f"Recipe LLM returned invalid JSON.\n\nRaw response:\n{raw[:500]}\n\nError: {e}"
+        )
+
+
+# ── Option C: Deterministic R code assembler ──────────────────────────────────
+
+def assemble_r_from_recipe(recipe: dict) -> str:
+    """
+    Deterministically assemble a complete R script from a structured recipe dict.
+    Always includes the package auto-install block.
+    Enforces correct Tplyr API usage by construction.
+    """
+    dataset_var = recipe.get("dataset_var", "dataset")
+    approach    = recipe.get("approach", "tplyr")
+
+    lines = [_PACKAGE_BLOCK, ""]
+
+    # ── Dataset load ──────────────────────────────────────────────────────────
+    lines += [
+        "ext <- tolower(tools::file_ext(data_path))",
+        'if (ext == "sas7bdat") {',
+        f'  {dataset_var} <- haven::read_sas(data_path)',
+        '} else if (ext == "csv") {',
+        f'  {dataset_var} <- read.csv(data_path, stringsAsFactors = FALSE)',
+        '} else {',
+        '  env <- new.env()',
+        '  load(data_path, envir = env)',
+        f'  {dataset_var} <- get(ls(env)[1], envir = env)',
+        '}',
+        '',
+    ]
+
+    # ── Pre-filters ───────────────────────────────────────────────────────────
+    filters = recipe.get("pre_filters", [])
+    if filters:
+        filter_expr = ", ".join(filters)
+        lines.append(f'{dataset_var} <- {dataset_var} %>% filter({filter_expr})')
+        lines.append('')
+
+    # ── Derived vars ──────────────────────────────────────────────────────────
+    for dv in recipe.get("derived_vars", []):
+        dv_ds = dv.get("dataset_var", dataset_var)
+        lines.append(f'{dv_ds} <- {dv_ds} %>% mutate({dv["name"]} = {dv["expr"]})')
+    if recipe.get("derived_vars"):
+        lines.append('')
+
+    # ── Build tables ──────────────────────────────────────────────────────────
+    if approach == "survival":
+        lines += _assemble_survival(recipe, dataset_var)
+        return '\n'.join(lines)
+
+    table_result_vars = []
+    for tbl in recipe.get("tables", []):
+        tvar       = tbl.get("table_var", "t1")
+        result_var = f"{tvar}_df"
+        lines += _assemble_tplyr_table(tbl, result_var)
+        lines.append('')
+        table_result_vars.append(result_var)
+
+    # ── Combine tables ────────────────────────────────────────────────────────
+    combine = recipe.get("combine_method", "bind_rows")
+    if not table_result_vars:
+        lines.append('final_df <- data.frame()')
+    elif len(table_result_vars) == 1:
+        lines.append(f'final_df <- {table_result_vars[0]}')
+    else:
+        args = ', '.join(table_result_vars)
+        lines.append(f'final_df <- {combine}({args})')
+
+    return '\n'.join(lines)
+
+
+def _assemble_tplyr_table(tbl: dict, result_var: str) -> list:
+    """Return R code lines for one tplyr_table() → build() call."""
+    tbl_dataset  = tbl.get("dataset_var", "dataset")
+    treatment_var = tbl.get("treatment_var", "TRTP")
+    add_total    = tbl.get("add_total", False)
+    layers       = tbl.get("layers", [])
+    tvar         = tbl.get("table_var", "t1")
+
+    pipe_parts = [f'tplyr_table({tbl_dataset}, {treatment_var})']
+    if add_total:
+        pipe_parts.append('  add_total_group()')
+    for layer in layers:
+        pipe_parts.append(_assemble_layer(layer))
+
+    code = f'{tvar} <- ' + ' %>%\n'.join(pipe_parts)
+    return [code, f'{result_var} <- {tvar} %>% build()']
+
+
+def _assemble_layer(layer: dict) -> str:
+    """Return R code snippet for a single add_layer(...) call."""
+    layer_type  = layer.get("type", "group_count")
+    var         = layer.get("var", "")
+    nested_var  = layer.get("nested_var")
+    by_var      = layer.get("by_var")   # data column name or null — NEVER a string label
+    distinct_by = layer.get("distinct_by")
+    stats       = layer.get("stats", [])
+
+    # Variable expression
+    var_expr = f"vars({var}, {nested_var})" if nested_var else var
+    if by_var:
+        var_expr = f"{var_expr}, by = {by_var}"
+
+    parts = []
+    if layer_type == "group_desc":
+        parts.append(f"    group_desc({var_expr})")
+        fmt_items = []
+        if "n" in stats:
+            fmt_items.append('        "n"         = f_str("xx", n)')
+        if "mean" in stats and "sd" in stats:
+            fmt_items.append('        "Mean (SD)" = f_str("xx.x (xx.xx)", mean, sd)')
+        elif "mean" in stats:
+            fmt_items.append('        "Mean"      = f_str("xx.x", mean)')
+        if "median" in stats:
+            fmt_items.append('        "Median"    = f_str("xx.x", median)')
+        if "min" in stats and "max" in stats:
+            fmt_items.append('        "Min, Max"  = f_str("xx, xx", min, max)')
+        if fmt_items:
+            fmt_body = ",\n".join(fmt_items)
+            parts.append(f"      set_format_strings(\n{fmt_body}\n      )")
+    else:  # group_count
+        parts.append(f"    group_count({var_expr})")
+        parts.append('      set_format_strings("n (%)" = f_str("xx (xx.x%)", n, pct))')
+        if distinct_by:
+            parts.append(f"      set_distinct_by({distinct_by})")
+
+    inner = " %>%\n".join(parts)
+    return f"  add_layer(\n{inner}\n  )"
+
+
+def _assemble_survival(recipe: dict, dataset_var: str) -> list:
+    """Assemble Kaplan-Meier survival R code."""
+    treatment_var = "TRTP"
+    if recipe.get("tables"):
+        treatment_var = recipe["tables"][0].get("treatment_var", "TRTP")
+    return [
+        "library(survival)",
+        "library(broom)",
+        "",
+        f"km_fit <- survfit(Surv(AVAL, 1 - CNSR) ~ {treatment_var}, data = {dataset_var})",
+        "km_tbl <- summary(km_fit)$table",
+        "final_df <- as.data.frame(km_tbl)",
+        "final_df$strata <- rownames(final_df)",
+        "rownames(final_df) <- NULL",
+    ]
+
+
+# ── Option A: Auto-fix broken R scripts ───────────────────────────────────────
+
+def fix_r_script(
+    r_code: str,
+    error_log: str,
+    table_json: dict,
+    adam_specs: dict | None = None,
+    api_key: str = "",
+    provider: str = "OpenAI",
+    model: str = "gpt-4o-mini",
+) -> str:
+    """
+    Fix a broken R script based on its execution error log.
+    Used in the auto-retry loop in app.py (Option A).
+    """
+    adam_section = json.dumps(adam_specs, indent=2) if adam_specs else "Not provided."
+
+    user_msg = f"""The following R script failed with this error. Fix it so it runs without errors.
+
+## Error Log
+```
+{error_log[-3000:]}
+```
+
+## Broken R Script
+```r
+{r_code}
+```
+
+## Table Shell JSON
+{json.dumps(table_json, indent=2)}
+
+## AdaM Specs
+{adam_section}
+
+Rules for the fix:
+- Output ONLY the corrected R code — no explanation, no markdown fences
+- final_df must be a data frame
+- Use data_path as the dataset path variable
+- For Tplyr: by= must be a data column name or omitted — never a string label
+- One group_count/group_desc layer per analysis variable — not one layer per category
+- Do not include file-writing code
+"""
+
+    raw = call_llm(
+        system=(
+            "You are an expert R programmer specializing in clinical trial TLFs. "
+            "Fix the broken R script and return only the corrected R code."
+        ),
+        user=user_msg,
+        provider=provider,
+        model=model,
+        api_key=api_key,
+        max_tokens=3000,
+    )
+    return _strip_fences(raw)
+
+
+# ── Main entry point (recipe → assemble pipeline) ─────────────────────────────
+
 def generate_r_script(
     table_json: dict,
     skills_md: str,
@@ -78,9 +414,53 @@ def generate_r_script(
     provider: str = "OpenAI",
     model: str = "gpt-4o-mini",
 ) -> str:
+    """
+    Generate R script via the recipe → assemble pipeline (Option C).
+    Falls back to direct LLM generation if the recipe step fails.
+    """
+    try:
+        recipe = generate_r_recipe(
+            table_json=table_json,
+            adam_specs=adam_specs,
+            api_key=api_key or "",
+            provider=provider,
+            model=model,
+        )
+        return assemble_r_from_recipe(recipe)
+    except Exception:
+        # Fallback: ask LLM to write R code directly (old behaviour)
+        return _generate_r_script_direct(
+            table_json, skills_md, adam_specs, api_key, provider, model
+        )
+
+
+def _generate_r_script_direct(
+    table_json: dict,
+    skills_md: str,
+    adam_specs: dict | None = None,
+    api_key: str | None = None,
+    provider: str = "OpenAI",
+    model: str = "gpt-4o-mini",
+) -> str:
+    """Fallback: ask the LLM to write R code directly (no recipe)."""
+    _BASE_SYSTEM = """
+You are an expert R programmer for clinical trial statistical programming (TLFs).
+Generate a complete, executable R script that produces a data frame named `final_df`.
+
+STRICT RULES:
+- Output ONLY valid R code — no markdown, no explanation, no fences
+- Use the `data_path` variable — it will be injected before execution
+- Always include the package auto-install block using ~/R/library and lib= parameter
+- Always name the final output object `final_df`
+- Do NOT include pharmaRTF, RTF, or any file-writing code
+- For Tplyr: `by` parameter must be a data column name — NEVER a string label
+- ONE layer per analysis variable — Tplyr auto-creates one row per unique value
+- TPLYR CRITICAL: For response tables, use ONE group_count() layer on the response
+  variable (e.g. group_count(AVALC)). Never create one layer per response category.
+"""
     adam_section = ""
     if adam_specs:
-        adam_section = f"\n## AdaM Dataset Specifications (JSON)\n{json.dumps(adam_specs, indent=2)}\n\n---\n"
+        adam_section = f"\n## AdaM Specifications\n{json.dumps(adam_specs, indent=2)}\n\n---\n"
 
     user_message = f"""
 ## Skills Guide (skills.md)
@@ -93,14 +473,8 @@ def generate_r_script(
 
 ---
 {adam_section}
-Generate the R script for this table.
-- Use `data_path` as the variable holding the path to the dataset file.
-- Apply all population filters and PARAMCD conditions from the AdaM specs.
-- Use exact variable names from the AdaM specs key_variables section.
-- Choose the correct SKILL(s) from the guide above.
-Output only R code.
+Generate the R script for this table. Output only R code.
 """
-
     raw = call_llm(
         system=_BASE_SYSTEM,
         user=user_message,
@@ -112,7 +486,8 @@ Output only R code.
     return _strip_fences(raw)
 
 
-# ── QC agent ──────────────────────────────────────────────────────────────────
+# ── QC agent (optional, user-triggered) ───────────────────────────────────────
+
 def qc_r_script(
     r_code: str,
     table_json: dict,
@@ -137,7 +512,6 @@ def qc_r_script(
 
 Review the R script and return the QC JSON.
 """
-
     raw = call_llm(
         system=_QC_SYSTEM,
         user=user_message,

@@ -16,7 +16,7 @@ from dotenv import load_dotenv
 
 from parser import parse_png, parse_docx, parse_pdf
 from adam_parser import parse_adam_excel, parse_adam_pdf, parse_adam_docx
-from orchestrator import generate_r_script, qc_r_script
+from orchestrator import generate_r_script, generate_r_recipe, assemble_r_from_recipe, qc_r_script, fix_r_script
 from r_executor import run_r_script
 from llm_client import PROVIDER_MODELS, PROVIDER_KEY_LABELS, PROVIDER_KEY_PLACEHOLDERS, PROVIDER_KEY_HELP
 
@@ -266,10 +266,12 @@ st.html("""
 for key, default in {
     "table_json":       None,
     "adam_specs":       None,
+    "r_recipe":         None,
     "r_code":           "",
     "qc_result":        None,
     "result_csv_path":  None,
     "run_log":          "",
+    "run_attempts":     [],
 }.items():
     if key not in st.session_state:
         st.session_state[key] = default
@@ -575,6 +577,12 @@ with tab4:
             f"**Model:** {provider} · {model}"
         )
 
+        st.caption(
+            "**How code is generated:** The LLM first produces a structured **recipe JSON** "
+            "(Option C) that describes layers, variables, and filters — then Python assembles "
+            "valid R code from it deterministically. This prevents common Tplyr API mistakes."
+        )
+
         c1, _ = st.columns([1, 5])
         with c1:
             gen_btn = st.button("⚡ Generate R Script", type="primary", use_container_width=True)
@@ -583,21 +591,63 @@ with tab4:
             if not API_KEY:
                 st.error("Enter your API key in the sidebar first.")
                 st.stop()
-            with st.spinner(f"Calling **{model}** to generate R code…"):
+
+            # Step 1: generate recipe
+            with st.spinner(f"Step 1/2 · **{model}** building table recipe…"):
                 try:
-                    code = generate_r_script(
+                    recipe = generate_r_recipe(
                         table_json=st.session_state.table_json,
-                        skills_md=load_skills(),
                         adam_specs=st.session_state.adam_specs,
                         api_key=API_KEY,
                         provider=provider,
                         model=model,
                     )
+                    st.session_state.r_recipe = recipe
+                except Exception as e:
+                    st.error(f"Recipe generation failed: {e}")
+                    st.stop()
+
+            # Step 2: assemble R code from recipe
+            with st.spinner("Step 2/2 · Assembling R code from recipe…"):
+                try:
+                    code = assemble_r_from_recipe(st.session_state.r_recipe)
                     st.session_state.r_code    = code
                     st.session_state.qc_result = None
-                    st.success("R script generated! Run QC below or proceed to Step 5.")
+                    st.session_state.run_attempts = []
+                    st.success("R script generated! Review the recipe and code below, then proceed to Step 5.")
                 except Exception as e:
-                    st.error(f"Code generation failed: {e}")
+                    st.error(f"Code assembly failed: {e}")
+                    st.stop()
+
+        # ── Recipe inspector ──────────────────────────────────────────────────
+        if st.session_state.r_recipe:
+            with st.expander("🔬 Recipe JSON (Option C — structured plan)", expanded=False):
+                st.caption(
+                    "This is the structured plan the LLM produced. "
+                    "Edit and click **Re-assemble from recipe** to regenerate R code without another LLM call."
+                )
+                recipe_str = st.text_area(
+                    "Recipe JSON",
+                    value=json.dumps(st.session_state.r_recipe, indent=2),
+                    height=300,
+                    label_visibility="collapsed",
+                    key="recipe_editor",
+                )
+                rc1, rc2 = st.columns([1, 4])
+                with rc1:
+                    if st.button("🔄 Re-assemble from recipe", use_container_width=True):
+                        try:
+                            new_recipe = json.loads(recipe_str)
+                            st.session_state.r_recipe = new_recipe
+                            st.session_state.r_code   = assemble_r_from_recipe(new_recipe)
+                            st.session_state.qc_result = None
+                            st.session_state.run_attempts = []
+                            st.success("R code re-assembled from edited recipe.")
+                            st.rerun()
+                        except json.JSONDecodeError as e:
+                            st.error(f"Invalid JSON in recipe: {e}")
+                        except Exception as e:
+                            st.error(f"Assembly failed: {e}")
 
         if st.session_state.r_code:
             st.markdown("---")
@@ -648,9 +698,9 @@ with tab4:
 
             # ── QC results ────────────────────────────────────────────────────
             if st.session_state.qc_result:
-                qc       = st.session_state.qc_result
-                passed   = qc.get("qc_passed", False)
-                issues   = qc.get("issues", [])
+                qc        = st.session_state.qc_result
+                passed    = qc.get("qc_passed", False)
+                issues    = qc.get("issues", [])
                 corrected = qc.get("corrected_code", "")
 
                 if passed:
@@ -675,7 +725,7 @@ with tab4:
                         c1, c2 = st.columns([1, 4])
                         with c1:
                             if st.button("✅ Apply corrected code", type="primary"):
-                                st.session_state.r_code = corrected
+                                st.session_state.r_code    = corrected
                                 st.session_state.qc_result = None
                                 st.success("Corrected code applied. Proceed to Step 5.")
                                 st.rerun()
@@ -757,6 +807,7 @@ with tab5:
                 placeholder=r"C:\data\adrs.sas7bdat",
             )
 
+        _MAX_RETRIES = 2
         run_btn = st.button("▶️ Run R Script", type="primary")
 
         if run_btn:
@@ -765,6 +816,11 @@ with tab5:
                     "Rscript path is not set. Expand **⚙️ Rscript path** above and enter the path manually."
                 )
                 st.stop()
+            if not API_KEY:
+                st.warning(
+                    "No API key set — auto-retry on failure will be skipped. "
+                    "Enter your key in the sidebar to enable it."
+                )
 
             resolved_path = ""
             if data_file:
@@ -779,19 +835,87 @@ with tab5:
                 st.error("Please upload a dataset file or enter a file path.")
 
             if resolved_path:
-                with st.spinner("Running Rscript… (may take a minute for package installs)"):
-                    success, csv_path, log = run_r_script(
-                        st.session_state.r_code, resolved_path, rscript_path=RSCRIPT_PATH
-                    )
-                    st.session_state.result_csv_path = csv_path if success else None
-                    st.session_state.run_log = log
+                st.session_state.run_attempts = []
+                current_code = st.session_state.r_code
+                success = False
+                csv_path = ""
+                log = ""
+
+                for attempt in range(1, _MAX_RETRIES + 2):  # attempts: 1, 2, 3
+                    label = f"Attempt {attempt}" if attempt > 1 else "Running R script"
+                    with st.spinner(f"{label}… (may take a minute for package installs)"):
+                        success, csv_path, log = run_r_script(
+                            current_code, resolved_path, rscript_path=RSCRIPT_PATH
+                        )
+
+                    st.session_state.run_attempts.append({
+                        "attempt": attempt,
+                        "success": success,
+                        "log": log,
+                        "code": current_code,
+                    })
+
+                    if success:
+                        break
+
+                    # Option A: auto-fix and retry if API key is available
+                    if attempt <= _MAX_RETRIES and API_KEY:
+                        with st.spinner(
+                            f"Attempt {attempt} failed — asking **{model}** to fix the error… "
+                            f"(retry {attempt}/{_MAX_RETRIES})"
+                        ):
+                            try:
+                                fixed_code = fix_r_script(
+                                    r_code=current_code,
+                                    error_log=log,
+                                    table_json=st.session_state.table_json,
+                                    adam_specs=st.session_state.adam_specs,
+                                    api_key=API_KEY,
+                                    provider=provider,
+                                    model=model,
+                                )
+                                current_code = fixed_code
+                                st.session_state.r_code = fixed_code
+                            except Exception as fix_err:
+                                st.warning(f"Auto-fix failed: {fix_err} — stopping retries.")
+                                break
+                    else:
+                        break
+
+                st.session_state.result_csv_path = csv_path if success else None
+                st.session_state.run_log = log
 
                 if success:
-                    st.success("R script executed successfully!")
+                    n_attempts = len(st.session_state.run_attempts)
+                    if n_attempts == 1:
+                        st.success("R script executed successfully!")
+                    else:
+                        st.success(f"R script succeeded on attempt {n_attempts} (auto-fixed {n_attempts - 1} time(s)).")
+                        st.info("The corrected R code has been saved and is shown in Step 4.")
                 else:
-                    st.error("R script failed. See the execution log below.")
+                    st.error(
+                        f"R script failed after {len(st.session_state.run_attempts)} attempt(s). "
+                        "See the execution log below. You can also manually edit the code in Step 4 and re-run."
+                    )
 
-        if st.session_state.run_log:
+        # ── Execution log (all attempts) ──────────────────────────────────────
+        if st.session_state.run_attempts:
+            attempts = st.session_state.run_attempts
+            if len(attempts) == 1:
+                with st.expander("Execution log", expanded=not attempts[0]["success"]):
+                    st.code(attempts[0]["log"], language="bash")
+            else:
+                for att in attempts:
+                    icon = "✅" if att["success"] else "❌"
+                    with st.expander(
+                        f"{icon} Attempt {att['attempt']} log",
+                        expanded=not att["success"] and att == attempts[-1],
+                    ):
+                        if not att["success"] and att["attempt"] > 1:
+                            st.caption("Code used in this attempt (auto-fixed by LLM):")
+                            st.code(att["code"], language="r")
+                        st.code(att["log"], language="bash")
+        elif st.session_state.run_log:
             with st.expander("Execution log", expanded=not bool(st.session_state.result_csv_path)):
                 st.code(st.session_state.run_log, language="bash")
 
