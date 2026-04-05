@@ -18,11 +18,15 @@ Your job is to convert a structured JSON table specification into a clean, execu
 **Rule**: Always prepend this block to every script.
 
 ```r
-# Auto-install required packages
+# Auto-install required packages (writable user library for restricted environments)
+local_lib <- path.expand("~/R/library")
+dir.create(local_lib, recursive = TRUE, showWarnings = FALSE)
+.libPaths(c(local_lib, .libPaths()))
+
 pkgs <- c("Tplyr", "dplyr", "haven", "stringr", "tidyr")
 for (pkg in pkgs) {
   if (!requireNamespace(pkg, quietly = TRUE)) {
-    install.packages(pkg, repos = "https://cloud.r-project.org")
+    install.packages(pkg, repos = "https://cloud.r-project.org", lib = local_lib)
   }
 }
 library(Tplyr)

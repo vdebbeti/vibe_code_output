@@ -20,7 +20,7 @@ STRICT RULES:
 - Output ONLY valid R code — no markdown, no explanation, no fences
 - The script must be self-contained and runnable via Rscript
 - Use the `data_path` variable — it will be injected before execution
-- Always include the package auto-install block (SKILL 1 from skills guide)
+- Always include the package auto-install block (SKILL 1 from skills guide) — use a writable user library path via path.expand("~/R/library") and pass lib= to install.packages()
 - Always name the final output object `final_df`
 - Do NOT include pharmaRTF, RTF, or any file-writing code
 - Use the exact variable names from the AdaM specs JSON (analysis_var, treatment_variable)
