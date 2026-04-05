@@ -417,7 +417,7 @@ with tab1:
             "Click below to install them **in the background**. "
             "You can continue uploading files and configuring the pipeline while it runs."
         )
-        _install_running = st.session_state.get("_install_proc") and st.session_state["_install_proc"].poll() is None
+        _install_running = bool(st.session_state.get("_install_proc") and st.session_state["_install_proc"].poll() is None)
         if st.button(
             "📦 Install R packages" if not _install_running else "⏳ Install in progress…",
             disabled=not bool(_rscript_for_install) or _install_running,
