@@ -300,12 +300,20 @@ def _sanitise_r_code(code: str, dataset_source: str = "dataset") -> tuple[str, l
     clean = code
 
     # 1. Strip bare install.packages() without lib=
-    bare = re.findall(r'install\.packages\s*\([^)]*\)', clean)
-    without_lib = [c for c in bare if "lib" not in c]
-    if without_lib:
-        clean = re.sub(r'^\s*install\.packages\s*\([^)]*\)\s*\n?', '', clean, flags=re.MULTILINE)
+    # Only remove lines where install.packages() does NOT contain "lib"
+    bare_pattern = re.compile(r'^\s*install\.packages\s*\(([^)]*)\)\s*$', re.MULTILINE)
+    removed_count = 0
+    def _strip_bare_install(m):
+        nonlocal removed_count
+        args = m.group(1)
+        if "lib" not in args:
+            removed_count += 1
+            return ""  # remove this line
+        return m.group(0)  # keep install.packages() calls that have lib=
+    clean = bare_pattern.sub(_strip_bare_install, clean)
+    if removed_count:
         warnings.append(
-            f"Removed {len(without_lib)} bare `install.packages()` call(s) that lacked `lib=` "
+            f"Removed {removed_count} bare `install.packages()` call(s) that lacked `lib=` "
             "— these fail in restricted environments. The proper install block has been prepended."
         )
 

@@ -372,12 +372,14 @@ def fix_r_script(
     Fix a broken R script based on its execution error log.
     Pre-sanitises common convention violations before sending to LLM (Option A).
     """
-    # ── Pre-sanitise: strip any bare install.packages() calls that lack lib= ──
-    # These always fail in restricted environments and get re-added incorrectly by LLM
+    # ── Pre-sanitise: strip only bare install.packages() calls that lack lib= ──
+    # Keep install.packages() calls that already have lib= (they're correct)
     import re
+    def _strip_bare(m):
+        return "" if "lib" not in m.group(1) else m.group(0)
     r_code_clean = re.sub(
-        r'^\s*install\.packages\s*\([^)]*\)\s*\n?',
-        '',
+        r'^\s*install\.packages\s*\(([^)]*)\)\s*$',
+        _strip_bare,
         r_code,
         flags=re.MULTILINE,
     )
