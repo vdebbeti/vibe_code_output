@@ -72,7 +72,7 @@ def run_r_script(r_code: str, data_path: str, rscript_path: str | None = None) -
             [rscript_exe, "--vanilla", script_path],
             capture_output=True,
             text=True,
-            timeout=300,
+            timeout=600,
         )
         log = result.stdout + "\n" + result.stderr
 
@@ -87,6 +87,6 @@ def run_r_script(r_code: str, data_path: str, rscript_path: str | None = None) -
             "Please ensure R is installed and Rscript.exe is on your PATH."
         )
     except subprocess.TimeoutExpired:
-        return False, "", "R script timed out after 5 minutes."
+        return False, "", "R script timed out after 10 minutes."
     except Exception as e:
         return False, "", f"Unexpected error: {str(e)}"

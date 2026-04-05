@@ -26,6 +26,38 @@ BASE_DIR    = Path(__file__).parent
 DATA_DIR    = BASE_DIR / "data"
 SKILLS_PATH = BASE_DIR / "skills.md"
 
+# ── R package pre-installer (called only on user request) ────────────────────
+@st.cache_resource
+def _preinstall_r_packages(rscript_path: str) -> str:
+    """
+    Installs Tplyr and dependencies into ~/R/library.
+    Cached per server session — only runs once even if button is clicked again.
+    """
+    import subprocess, tempfile
+    install_script = r"""
+local_lib <- path.expand("~/R/library")
+dir.create(local_lib, recursive = TRUE, showWarnings = FALSE)
+.libPaths(c(local_lib, .libPaths()))
+pkgs <- c("Tplyr", "dplyr", "haven", "stringr", "tidyr")
+for (pkg in pkgs) {
+  if (!requireNamespace(pkg, quietly = TRUE)) {
+    cat(paste("Installing", pkg, "...\n"))
+    install.packages(pkg, repos = "https://cloud.r-project.org", lib = local_lib)
+  } else {
+    cat(paste(pkg, "already installed.\n"))
+  }
+}
+cat("Done.\n")
+"""
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".R", mode="w") as f:
+        f.write(install_script)
+        tmp_path = f.name
+    result = subprocess.run(
+        [rscript_path, "--vanilla", tmp_path],
+        capture_output=True, text=True, timeout=600,
+    )
+    return (result.stdout + result.stderr).strip()
+
 # ── Page config ───────────────────────────────────────────────────────────────
 st.set_page_config(
     page_title="TLF Output Generator",
@@ -257,6 +289,29 @@ tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
 # ═════════════════════════════════════════════════════════════════════════════
 with tab1:
     st.markdown("## Step 1 · Upload & Parse Mock Shell")
+
+    # ── R package pre-install ─────────────────────────────────────────────────
+    from r_executor import _find_rscript as _detect_rscript
+    _rscript_for_install = _detect_rscript()
+    with st.expander("📦 Pre-install R packages (recommended before first run)", expanded=False):
+        st.markdown(
+            "The R script installs **Tplyr, dplyr, haven, stringr, tidyr** automatically "
+            "when it runs — but on cloud environments this can time out.\n\n"
+            "Click below to install them **now** in the background. "
+            "This only runs once per session."
+        )
+        if st.button("📦 Install R packages", disabled=not bool(_rscript_for_install)):
+            if not _rscript_for_install:
+                st.error("Rscript not found. Ensure R is installed.")
+            else:
+                with st.spinner("Installing R packages… this may take 3–5 minutes."):
+                    _install_log = _preinstall_r_packages(_rscript_for_install)
+                st.success("Packages installed successfully.")
+                st.code(_install_log, language="bash")
+        if not _rscript_for_install:
+            st.warning("Rscript not detected on this machine — button disabled.")
+
+    st.divider()
 
     col_info, col_dl = st.columns([3, 1])
     with col_info:
