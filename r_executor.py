@@ -26,7 +26,7 @@ def _find_rscript() -> str:
     return "Rscript"  # fallback: rely on PATH
 
 
-def run_r_script(r_code: str, data_path: str) -> tuple:
+def run_r_script(r_code: str, data_path: str, rscript_path: str | None = None) -> tuple:
     """
     Inject data_path into the R script, run it, capture final_df as CSV.
 
@@ -37,7 +37,7 @@ def run_r_script(r_code: str, data_path: str) -> tuple:
     Returns:
         (success: bool, output_csv_path: str, log: str)
     """
-    rscript_exe = _find_rscript()
+    rscript_exe = rscript_path or _find_rscript()
 
     # Temp directory for this run
     tmp_dir = tempfile.mkdtemp(prefix="r_exec_")

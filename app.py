@@ -610,6 +610,7 @@ with tab4:
                         with c1:
                             if st.button("✅ Apply corrected code", type="primary"):
                                 st.session_state.r_code = corrected
+                                st.session_state.qc_result = None
                                 st.success("Corrected code applied. Proceed to Step 5.")
                                 st.rerun()
                         with c2:
