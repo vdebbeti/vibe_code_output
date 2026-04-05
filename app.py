@@ -16,7 +16,7 @@ from dotenv import load_dotenv
 
 from parser import parse_png, parse_docx, parse_pdf
 from adam_parser import parse_adam_excel, parse_adam_pdf, parse_adam_docx
-from orchestrator import generate_r_script, generate_r_recipe, assemble_r_from_recipe, qc_r_script, fix_r_script
+from orchestrator import generate_r_script, generate_r_recipe, assemble_r_from_recipe, qc_r_script, fix_r_script, _PACKAGE_BLOCK
 from r_executor import run_r_script
 from llm_client import PROVIDER_MODELS, PROVIDER_KEY_LABELS, PROVIDER_KEY_PLACEHOLDERS, PROVIDER_KEY_HELP
 
@@ -279,6 +279,77 @@ for key, default in {
 
 def load_skills() -> str:
     return SKILLS_PATH.read_text(encoding="utf-8") if SKILLS_PATH.exists() else ""
+
+
+def _sanitise_r_code(code: str, dataset_source: str = "dataset") -> tuple[str, list[str]]:
+    """
+    Pre-sanitise R code pasted from external sources before execution.
+    Returns (sanitised_code, list_of_warnings).
+    Fixes:
+      1. Bare install.packages() calls without lib= → strips them (proper block replaces)
+      2. Missing package block → prepends it
+      3. Missing data_path → injects a load block
+      4. gt / flextable / knitr final output → replaces with plain data frame
+    """
+    import re
+    warnings = []
+    clean = code
+
+    # 1. Strip bare install.packages() without lib=
+    bare = re.findall(r'install\.packages\s*\([^)]*\)', clean)
+    without_lib = [c for c in bare if "lib" not in c]
+    if without_lib:
+        clean = re.sub(r'^\s*install\.packages\s*\([^)]*\)\s*\n?', '', clean, flags=re.MULTILINE)
+        warnings.append(
+            f"Removed {len(without_lib)} bare `install.packages()` call(s) that lacked `lib=` "
+            "— these fail in restricted environments. The proper install block has been prepended."
+        )
+
+    # 2. Prepend package block if missing
+    if "local_lib <- path.expand" not in clean:
+        clean = _PACKAGE_BLOCK + "\n\n" + clean
+        warnings.append(
+            "Prepended the standard package install block (writable `~/R/library`). "
+            "This is required for the app to work in restricted/cloud environments."
+        )
+
+    # 3. Inject data_path load block if missing
+    if "data_path" not in clean:
+        ds = dataset_source.lower() if dataset_source else "dataset"
+        load_block = (
+            f'\next <- tolower(tools::file_ext(data_path))\n'
+            f'if (ext == "sas7bdat") {{\n'
+            f'  {ds} <- haven::read_sas(data_path)\n'
+            f'}} else if (ext == "csv") {{\n'
+            f'  {ds} <- read.csv(data_path, stringsAsFactors = FALSE)\n'
+            f'}} else {{\n'
+            f'  env <- new.env(); load(data_path, envir = env)\n'
+            f'  {ds} <- get(ls(env)[1], envir = env)\n'
+            f'}}\n'
+        )
+        last_lib = list(re.finditer(r'^library\s*\(.*?\)\s*$', clean, re.MULTILINE))
+        if last_lib:
+            pos = last_lib[-1].end()
+            clean = clean[:pos] + load_block + clean[pos:]
+        else:
+            clean += load_block
+        warnings.append(
+            f"Injected a `data_path` dataset load block — external code often assumes the "
+            f"dataset is already in memory, but this app passes it via `data_path`."
+        )
+
+    # 4. Replace gt/flextable print output with plain data frame assignment
+    if re.search(r'\bgt\s*\(|\bflextable\s*\(|\bas_gt\s*\(', clean):
+        clean = re.sub(r'[^\n]*(gt|flextable|as_gt)\s*\([^\n]*\)\n?', '', clean)
+        # Ensure final_df exists
+        if "final_df" not in clean:
+            clean += "\nfinal_df <- as.data.frame(get(ls()[length(ls())]))\n"
+        warnings.append(
+            "Removed `gt`/`flextable` output calls — this app returns `final_df` as a plain "
+            "data frame and renders it natively. Install `gt` is also not in the package list."
+        )
+
+    return clean, warnings
 
 
 def _sample_bytes(filename: str) -> bytes | None:
@@ -664,9 +735,17 @@ with tab4:
             c1, c2, c3, c4 = st.columns([1, 1, 1, 3])
             with c1:
                 if st.button("💾 Save edits", use_container_width=True, key="save_r"):
-                    st.session_state.r_code    = edited_code
+                    _ds = (st.session_state.table_json or {}).get("table_metadata", {}).get("dataset_source", "dataset")
+                    sanitised, _warns = _sanitise_r_code(edited_code, _ds)
+                    st.session_state.r_code    = sanitised
                     st.session_state.qc_result = None
-                    st.success("Code updated.")
+                    if _warns:
+                        for w in _warns:
+                            st.warning(f"⚠️ Auto-fixed: {w}")
+                        st.info("Code was auto-sanitised before saving. Review below.")
+                        st.rerun()
+                    else:
+                        st.success("Code updated.")
             with c2:
                 st.download_button(
                     label="⬇️ Download .R",
@@ -836,7 +915,12 @@ with tab5:
 
             if resolved_path:
                 st.session_state.run_attempts = []
-                current_code = st.session_state.r_code
+                _ds = (st.session_state.table_json or {}).get("table_metadata", {}).get("dataset_source", "dataset")
+                current_code, _san_warns = _sanitise_r_code(st.session_state.r_code, _ds)
+                if _san_warns:
+                    st.session_state.r_code = current_code
+                    for w in _san_warns:
+                        st.warning(f"⚠️ Auto-sanitised before run: {w}")
                 success = False
                 csv_path = ""
                 log = ""

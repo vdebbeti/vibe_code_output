@@ -111,6 +111,17 @@ ABSOLUTE RULES — THESE ARE NON-NEGOTIABLE:
    "bind_cols" when merging side-by-side (e.g. severity columns)
 
 8. Output ONLY valid JSON — no markdown fences, no explanation text
+
+9. VARIABLE NAMES MUST EXIST IN THE DATASET — CRITICAL:
+   - Every "var", "nested_var", "by_var", "distinct_by" value MUST be a column name
+     taken verbatim from the AdaM specs "key_variables" section or the table shell
+     "analysis_var" fields.
+   - NEVER invent column names. NEVER guess. If a variable is not listed in the AdaM
+     specs, DO NOT include a layer for it.
+   - If the AdaM specs list AVAL as the numeric analysis variable, use "var": "AVAL" —
+     not "Duration_of_Response", not "DOR", not any other invented name.
+   - If you are unsure whether a variable exists, omit the layer entirely rather than
+     inventing a plausible-sounding name.
 """
 
 # ── QC system prompt ──────────────────────────────────────────────────────────
@@ -359,8 +370,46 @@ def fix_r_script(
 ) -> str:
     """
     Fix a broken R script based on its execution error log.
-    Used in the auto-retry loop in app.py (Option A).
+    Pre-sanitises common convention violations before sending to LLM (Option A).
     """
+    # ── Pre-sanitise: strip any bare install.packages() calls that lack lib= ──
+    # These always fail in restricted environments and get re-added incorrectly by LLM
+    import re
+    r_code_clean = re.sub(
+        r'^\s*install\.packages\s*\([^)]*\)\s*\n?',
+        '',
+        r_code,
+        flags=re.MULTILINE,
+    )
+
+    # ── Pre-sanitise: ensure the proper package block is present ──────────────
+    if "local_lib <- path.expand" not in r_code_clean:
+        r_code_clean = _PACKAGE_BLOCK + "\n\n" + r_code_clean
+
+    # ── Pre-sanitise: ensure data_path is used for dataset loading ────────────
+    # If the script never references data_path, inject a load block after libraries
+    if "data_path" not in r_code_clean:
+        dataset_var = (table_json.get("table_metadata") or {}).get("dataset_source", "dataset")
+        dataset_var = dataset_var.lower() if dataset_var else "dataset"
+        load_block = (
+            f'\next <- tolower(tools::file_ext(data_path))\n'
+            f'if (ext == "sas7bdat") {{\n'
+            f'  {dataset_var} <- haven::read_sas(data_path)\n'
+            f'}} else if (ext == "csv") {{\n'
+            f'  {dataset_var} <- read.csv(data_path, stringsAsFactors = FALSE)\n'
+            f'}} else {{\n'
+            f'  env <- new.env(); load(data_path, envir = env)\n'
+            f'  {dataset_var} <- get(ls(env)[1], envir = env)\n'
+            f'}}\n'
+        )
+        # Insert after the last library() call
+        match = list(re.finditer(r'^library\s*\(.*?\)\s*$', r_code_clean, re.MULTILINE))
+        if match:
+            insert_pos = match[-1].end()
+            r_code_clean = r_code_clean[:insert_pos] + load_block + r_code_clean[insert_pos:]
+        else:
+            r_code_clean = r_code_clean + load_block
+
     adam_section = json.dumps(adam_specs, indent=2) if adam_specs else "Not provided."
 
     user_msg = f"""The following R script failed with this error. Fix it so it runs without errors.
@@ -370,9 +419,9 @@ def fix_r_script(
 {error_log[-3000:]}
 ```
 
-## Broken R Script
+## R Script (pre-sanitised)
 ```r
-{r_code}
+{r_code_clean}
 ```
 
 ## Table Shell JSON
@@ -383,11 +432,17 @@ def fix_r_script(
 
 Rules for the fix:
 - Output ONLY the corrected R code — no explanation, no markdown fences
-- final_df must be a data frame
-- Use data_path as the dataset path variable
+- final_df must be a plain data frame (not a gt, flextable, or other object)
+- Use data_path as the dataset path variable — never hardcode a file path
+- Never call install.packages() without lib = path.expand("~/R/library")
+- The proper package install block using local_lib is already at the top — keep it
 - For Tplyr: by= must be a data column name or omitted — never a string label
-- One group_count/group_desc layer per analysis variable — not one layer per category
-- Do not include file-writing code
+- One group_count/group_desc layer per analysis variable — not one per category
+- Do not include file-writing, gt, flextable, knitr, or RTF output code
+- CRITICAL: Only use variable names that actually exist in the dataset per the AdaM
+  specs. The error "assert_quo_var_present" means a column name in a Tplyr layer
+  does not exist in the dataset — remove or correct that layer using the exact column
+  name from AdaM specs (e.g. AVAL, AVALC, USUBJID), never an invented name.
 """
 
     raw = call_llm(
