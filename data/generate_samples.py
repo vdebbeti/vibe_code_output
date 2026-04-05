@@ -1,12 +1,16 @@
 """
 Generates sample data files for TLF Output Generator:
   1. sample_shell_annotated.png  — annotated oncology efficacy mock shell
-  2. sample_adam_specs.xlsx      — sample ADRS AdaM dataset specifications
+  2. sample_adam_specs.xlsx      — ADRS AdaM specs (Variable Level + Value Level)
+  3. sample_adrs.csv             — 90-subject ADRS dataset (BOR + ORR + DCR)
 Run once:  python data/generate_samples.py
 """
 
 import os
+import random
+import csv
 from pathlib import Path
+from datetime import datetime, timedelta
 
 OUT_DIR = Path(__file__).parent
 
@@ -172,7 +176,7 @@ def make_annotated_shell():
 
 
 # ─────────────────────────────────────────────────────────────────
-# 2. Sample AdaM specs Excel (ADRS domain)
+# 2. Sample AdaM specs Excel — Variable Level + Value Level
 # ─────────────────────────────────────────────────────────────────
 def make_adam_specs():
     import openpyxl
@@ -184,8 +188,6 @@ def make_adam_specs():
     # ── helper styles ──
     HDR_FILL   = PatternFill("solid", fgColor="1E3C6E")
     HDR_FONT   = Font(bold=True, color="FFFFFF", size=10)
-    SUB_FILL   = PatternFill("solid", fgColor="DCE6F1")
-    SUB_FONT   = Font(bold=True, size=10)
     CELL_FONT  = Font(size=9)
     ALT_FILL   = PatternFill("solid", fgColor="F2F6FC")
     thin = Side(style="thin", color="B0B8C8")
@@ -204,124 +206,211 @@ def make_adam_specs():
             c.font = CELL_FONT; c.alignment = wrap; c.border = border
             if alt: c.fill = fill
 
-    # ── Sheet 1: ADRS Variables ──
+    # ══════════════════════════════════════════════════════════════
+    # Sheet 1: Variable Level
+    # ══════════════════════════════════════════════════════════════
     ws1 = wb.active
-    ws1.title = "ADRS_Variables"
+    ws1.title = "Variable_Level"
     ws1.sheet_view.showGridLines = False
 
-    # title
-    ws1.merge_cells("A1:J1")
+    # Title
+    ws1.merge_cells("A1:H1")
     t = ws1["A1"]
-    t.value = "AdaM Dataset Specifications — ADRS (Oncology Response Dataset)"
+    t.value = "ADRS — Variable Level Metadata"
     t.font = Font(bold=True, size=12, color="1E3C6E")
     t.alignment = Alignment(horizontal="center", vertical="center")
     ws1.row_dimensions[1].height = 24
 
-    ws1.merge_cells("A2:J2")
+    ws1.merge_cells("A2:H2")
     t2 = ws1["A2"]
-    t2.value = "Standard: CDISC ADaM ADRS v1.0 | Population Flag: FASFL = 'Y' | Key Parameter: PARAMCD = 'BOR'"
+    t2.value = "Dataset: ADRS (Oncology Response) | Standard: CDISC ADaM v1.0 | Population: FASFL = 'Y'"
     t2.font = Font(italic=True, size=10, color="555555")
     t2.alignment = Alignment(horizontal="center")
 
-    cols = ["Variable", "Label", "Type", "Length", "Format", "Origin", "Codelist / Values", "ADaM Core", "Key Flag", "Programmer Notes"]
+    cols = ["Variable", "Label", "Type", "Length", "Codelist / Values", "ADaM Core", "Key Flag", "Derivation / Notes"]
     hdr_row(ws1, 3, cols)
 
     variables = [
-        ("STUDYID",  "Study Identifier",              "Char", 20,  "",           "SDTM",    "",                          "Req",    "",    ""),
-        ("DOMAIN",   "Domain Abbreviation",           "Char", 2,   "",           "SDTM",    "ADRS",                      "Req",    "",    "Always 'ADRS'"),
-        ("USUBJID",  "Unique Subject Identifier",     "Char", 40,  "",           "SDTM",    "",                          "Req",    "",    "Key for merging to ADSL"),
-        ("SUBJID",   "Subject Identifier",            "Char", 20,  "",           "SDTM",    "",                          "Req",    "",    ""),
-        ("SITEID",   "Study Site Identifier",         "Char", 20,  "",           "SDTM",    "",                          "Perm",   "",    ""),
-        ("TRTP",     "Planned Treatment",             "Char", 200, "",           "Derived", "TRT01P from ADSL",          "Req",    "",    "Use for column grouping in Tplyr"),
-        ("TRTA",     "Actual Treatment",              "Char", 200, "",           "Derived", "TRT01A from ADSL",          "Req",    "",    "Use TRTA for safety tables"),
-        ("PARAMCD",  "Parameter Code",                "Char", 8,   "",           "Derived", "BOR=Best Overall Response\nORR=Overall Response Rate\nDCR=Disease Control Rate", "Req", "KEY", "Filter: PARAMCD='BOR' for response table"),
-        ("PARAM",    "Parameter Description",         "Char", 200, "",           "Derived", "",                          "Req",    "",    "Long form of PARAMCD"),
-        ("AVAL",     "Analysis Value (numeric)",      "Num",  8,   "",           "Derived", "1=Responder, 0=Non-resp",   "Req",    "",    "Used for ORR: AVAL=1 when AVALC in ('CR','PR')"),
-        ("AVALC",    "Analysis Value (character)",    "Char", 200, "",           "Derived", "CR=Complete Response\nPR=Partial Response\nSD=Stable Disease\nPD=Progressive Disease\nNE=Not Evaluable", "Req", "KEY", "Primary analysis variable for response category"),
-        ("ANL01FL",  "Analysis 01 Flag",              "Char", 1,   "",           "Derived", "Y / N",                     "Req",    "KEY", "Y = include in primary analysis. Filter: ANL01FL='Y'"),
-        ("FASFL",    "Full Analysis Set Flag",        "Char", 1,   "",           "Derived", "Y / N",                     "Req",    "KEY", "Y = subject in FAS population. Filter: FASFL='Y'"),
-        ("DTYPE",    "Derivation Type",               "Char", 8,   "",           "Derived", "INTERIM",                   "Perm",   "",    "Blank for observed records"),
-        ("VISITNUM", "Visit Number",                  "Num",  8,   "",           "SDTM",    "",                          "Perm",   "",    ""),
-        ("VISIT",    "Visit Name",                    "Char", 200, "",           "SDTM",    "",                          "Perm",   "",    ""),
-        ("ADT",      "Analysis Date",                 "Num",  8,   "DATE9.",     "Derived", "",                          "Perm",   "",    "Date of response assessment"),
-        ("ADTM",     "Analysis Datetime",             "Num",  8,   "DATETIME.",  "Derived", "",                          "Perm",   "",    ""),
+        ("STUDYID",  "Study Identifier",              "Char", 20,  "",                          "Req",    "",    "From SDTM DM.STUDYID"),
+        ("USUBJID",  "Unique Subject Identifier",     "Char", 40,  "",                          "Req",    "",    "From SDTM DM.USUBJID — primary merge key to ADSL"),
+        ("SUBJID",   "Subject Identifier",            "Char", 20,  "",                          "Req",    "",    "From SDTM DM.SUBJID"),
+        ("SITEID",   "Study Site Identifier",         "Char", 20,  "",                          "Perm",   "",    "From SDTM DM.SITEID"),
+        ("TRTP",     "Planned Treatment",             "Char", 200, "Placebo / Drug A 50mg / Drug A 100mg", "Req", "", "Mapped from ADSL.TRT01P — use for column grouping in tables"),
+        ("TRTA",     "Actual Treatment",              "Char", 200, "Placebo / Drug A 50mg / Drug A 100mg", "Req", "", "Mapped from ADSL.TRT01A — use for safety tables"),
+        ("PARAMCD",  "Parameter Code",                "Char", 8,   "BOR / ORR / DCR",           "Req",    "KEY", "Identifies the analysis parameter — filter on this variable"),
+        ("PARAM",    "Parameter Description",         "Char", 200, "",                          "Req",    "",    "Long description of PARAMCD"),
+        ("AVAL",     "Analysis Value (numeric)",      "Num",  8,   "1 = Yes/Responder, 0 = No/Non-resp", "Req", "",  "Numeric version of response flag — see Value Level for derivation"),
+        ("AVALC",    "Analysis Value (character)",    "Char", 200, "CR / PR / SD / PD / NE",    "Req",    "KEY", "Primary analysis variable — see Value Level for derivation per PARAMCD"),
+        ("ANL01FL",  "Analysis Record Flag",          "Char", 1,   "Y / N",                     "Req",    "KEY", "Y = include in primary analysis. Always filter: ANL01FL = 'Y'"),
+        ("FASFL",    "Full Analysis Set Flag",        "Char", 1,   "Y / N",                     "Req",    "KEY", "Y = subject in FAS population. Always filter: FASFL = 'Y'"),
+        ("ADT",      "Analysis Date",                 "Num",  8,   "",                          "Perm",   "",    "Date of tumor assessment (SAS date)"),
     ]
 
     for i, row in enumerate(variables):
         data_row(ws1, i + 4, row, alt=(i % 2 == 1))
 
-    # Column widths
-    widths = [14, 26, 6, 8, 10, 12, 36, 10, 8, 42]
+    widths = [12, 28, 6, 8, 38, 10, 8, 54]
     for col, w in enumerate(widths, 1):
         ws1.column_dimensions[get_column_letter(col)].width = w
-    ws1.row_dimensions[3].height = 18
 
-    # ── Sheet 2: Analysis Conditions ──
-    ws2 = wb.create_sheet("Analysis_Conditions")
+    # ══════════════════════════════════════════════════════════════
+    # Sheet 2: Value Level — derivation per PARAMCD
+    # ══════════════════════════════════════════════════════════════
+    ws2 = wb.create_sheet("Value_Level")
     ws2.sheet_view.showGridLines = False
 
-    ws2.merge_cells("A1:G1")
+    ws2.merge_cells("A1:I1")
     t = ws2["A1"]
-    t.value = "ADRS — Analysis Conditions and Table Mapping"
+    t.value = "ADRS — Value Level Metadata (Derivation per PARAMCD)"
     t.font = Font(bold=True, size=12, color="1E3C6E")
     t.alignment = Alignment(horizontal="center", vertical="center")
     ws2.row_dimensions[1].height = 24
 
-    hdr_row(ws2, 2, ["Table Output", "Population Filter", "PARAMCD Filter", "ANL01FL", "Primary Variable", "Derived Condition", "R Skill to Apply"])
+    ws2.merge_cells("A2:I2")
+    t2 = ws2["A2"]
+    t2.value = "Each row describes how AVALC and AVAL are derived for a given PARAMCD value"
+    t2.font = Font(italic=True, size=10, color="555555")
+    t2.alignment = Alignment(horizontal="center")
 
-    conditions = [
-        ("Table 14.3.1 Tumor Response",   "FASFL='Y'", "PARAMCD='BOR'",  "ANL01FL='Y'", "AVALC",   "n(%) by AVALC category",                          "SKILL 4 (group_count)"),
-        ("Table 14.3.2 ORR",              "FASFL='Y'", "PARAMCD='ORR'",  "ANL01FL='Y'", "AVAL",    "ORR = AVAL=1; CI = Clopper-Pearson",              "SKILL 4 + CI layer"),
-        ("Table 14.3.3 DCR",              "FASFL='Y'", "PARAMCD='DCR'",  "ANL01FL='Y'", "AVAL",    "DCR = AVALC in (CR,PR,SD)",                       "SKILL 4 + CI layer"),
-        ("Table 14.3.4 DOR (KM)",         "FASFL='Y'", "PARAMCD='DOR'",  "ANL01FL='Y'", "AVAL",    "Median + 95% CI via survfit; CNSR=1 if censored", "SKILL 9 (survival/KM)"),
-        ("Table 14.3.5 PFS (KM)",         "FASFL='Y'", "PARAMCD='PFS'",  "ANL01FL='Y'", "AVAL",    "Median PFS; CNSR=0=event",                        "SKILL 9 (survival/KM)"),
-        ("Table 14.3.6 OS (KM)",          "FASFL='Y'", "PARAMCD='OS'",   "ANL01FL='Y'", "AVAL",    "Median OS; CNSR=0=event",                         "SKILL 9 (survival/KM)"),
+    hdr_row(ws2, 3, [
+        "PARAMCD", "PARAM (Description)", "Source",
+        "AVALC Derivation", "AVALC Possible Values",
+        "AVAL Derivation",
+        "Population Filter", "Analysis Flag", "Table Reference",
+    ])
+
+    value_rows = [
+        (
+            "BOR",
+            "Best Overall Response",
+            "SDTM RS / TU domains",
+            "Best confirmed response per RECIST 1.1: take the best response "
+            "across all post-baseline tumor assessments. CR > PR > SD > PD > NE.",
+            "CR = Complete Response\n"
+            "PR = Partial Response\n"
+            "SD = Stable Disease\n"
+            "PD = Progressive Disease\n"
+            "NE = Not Evaluable",
+            "AVAL = 1 if AVALC in ('CR','PR') else 0\n(binary responder flag)",
+            "FASFL = 'Y'",
+            "ANL01FL = 'Y'",
+            "Table 14.3.1\nTumor Response",
+        ),
+        (
+            "ORR",
+            "Overall Response Rate",
+            "Derived from BOR record",
+            "If subject's BOR AVALC in ('CR','PR') then AVALC = 'Responder', "
+            "else AVALC = 'Non-Responder'.\nOne record per subject.",
+            "Responder\nNon-Responder",
+            "AVAL = 1 if Responder, 0 if Non-Responder",
+            "FASFL = 'Y'",
+            "ANL01FL = 'Y'",
+            "Table 14.3.2\nOverall Response Rate",
+        ),
+        (
+            "DCR",
+            "Disease Control Rate",
+            "Derived from BOR record",
+            "If subject's BOR AVALC in ('CR','PR','SD') then AVALC = 'Controlled', "
+            "else AVALC = 'Not Controlled'.\nOne record per subject.",
+            "Controlled\nNot Controlled",
+            "AVAL = 1 if Controlled, 0 if Not Controlled",
+            "FASFL = 'Y'",
+            "ANL01FL = 'Y'",
+            "Table 14.3.3\nDisease Control Rate",
+        ),
     ]
-    for i, row in enumerate(conditions):
-        data_row(ws2, i + 3, row, alt=(i % 2 == 1))
 
-    ws2_widths = [28, 16, 18, 12, 18, 38, 24]
+    for i, row in enumerate(value_rows):
+        data_row(ws2, i + 4, row, alt=(i % 2 == 1))
+        ws2.row_dimensions[i + 4].height = 72  # taller rows for multiline text
+
+    ws2_widths = [10, 24, 20, 44, 28, 32, 14, 14, 18]
     for col, w in enumerate(ws2_widths, 1):
         ws2.column_dimensions[get_column_letter(col)].width = w
-
-    # ── Sheet 3: Codelist ──
-    ws3 = wb.create_sheet("Codelists")
-    ws3.sheet_view.showGridLines = False
-
-    ws3.merge_cells("A1:E1")
-    t = ws3["A1"]
-    t.value = "ADRS Codelist Reference"
-    t.font = Font(bold=True, size=12, color="1E3C6E")
-    t.alignment = Alignment(horizontal="center", vertical="center")
-    ws3.row_dimensions[1].height = 24
-
-    hdr_row(ws3, 2, ["Codelist Name", "Code", "Decode", "Used In", "Notes"])
-
-    codes = [
-        ("AVALC (Response)", "CR",  "Complete Response",     "AVALC",   "No residual tumor"),
-        ("AVALC (Response)", "PR",  "Partial Response",      "AVALC",   ">=30% reduction in sum of diameters"),
-        ("AVALC (Response)", "SD",  "Stable Disease",        "AVALC",   "Neither CR/PR nor PD criteria"),
-        ("AVALC (Response)", "PD",  "Progressive Disease",   "AVALC",   ">=20% increase in sum of diameters"),
-        ("AVALC (Response)", "NE",  "Not Evaluable",         "AVALC",   "Missing or unevaluable"),
-        ("NY (Flags)",       "Y",   "Yes",                   "ANL01FL, FASFL", "Inclusion flag"),
-        ("NY (Flags)",       "N",   "No",                    "ANL01FL, FASFL", "Exclusion flag"),
-        ("TRTP (Treatment)", "Placebo",     "Placebo",       "TRTP",    "Control arm"),
-        ("TRTP (Treatment)", "Drug A 50mg", "Drug A 50mg",   "TRTP",    "Low dose arm"),
-        ("TRTP (Treatment)", "Drug A 100mg","Drug A 100mg",  "TRTP",    "High dose arm"),
-    ]
-    for i, row in enumerate(codes):
-        data_row(ws3, i + 3, row, alt=(i % 2 == 1))
-
-    ws3_widths = [22, 14, 26, 22, 40]
-    for col, w in enumerate(ws3_widths, 1):
-        ws3.column_dimensions[get_column_letter(col)].width = w
 
     out = OUT_DIR / "sample_adam_specs.xlsx"
     wb.save(str(out))
     print(f"Saved: {out}")
 
 
+# ─────────────────────────────────────────────────────────────────
+# 3. Sample ADRS CSV — 90 subjects × 3 arms × (BOR + ORR + DCR)
+# ─────────────────────────────────────────────────────────────────
+def make_adrs_csv():
+    random.seed(42)
+
+    arms = ["Placebo"] * 30 + ["Drug A 50mg"] * 30 + ["Drug A 100mg"] * 30
+    sites = ["001", "002", "003", "004"]
+    bor_weights = {
+        "Placebo":        {"CR": 0.03, "PR": 0.10, "SD": 0.30, "PD": 0.45, "NE": 0.12},
+        "Drug A 50mg":    {"CR": 0.08, "PR": 0.22, "SD": 0.35, "PD": 0.25, "NE": 0.10},
+        "Drug A 100mg":   {"CR": 0.15, "PR": 0.28, "SD": 0.30, "PD": 0.18, "NE": 0.09},
+    }
+
+    def pick_bor(arm):
+        w = bor_weights[arm]
+        return random.choices(list(w.keys()), weights=list(w.values()), k=1)[0]
+
+    header = [
+        "STUDYID", "DOMAIN", "USUBJID", "SUBJID", "SITEID",
+        "TRTP", "TRTA", "PARAMCD", "PARAM", "AVAL", "AVALC",
+        "ANL01FL", "FASFL", "DTYPE", "VISITNUM", "VISIT", "ADT", "ADTM",
+    ]
+
+    rows = []
+    base_date = datetime(2023, 10, 1)
+
+    for subj_idx, arm in enumerate(arms, 1):
+        subjid = f"{subj_idx:04d}"
+        site = random.choice(sites)
+        usubjid = f"MYSTUDY01-{site}-{subjid}"
+        adt = base_date + timedelta(days=random.randint(0, 60))
+        adt_str = adt.strftime("%Y-%m-%d")
+        adtm_str = adt.strftime("%Y-%m-%dT%H:%M:00")
+
+        # BOR record
+        bor = pick_bor(arm)
+        bor_aval = 1 if bor in ("CR", "PR") else 0
+        rows.append([
+            "MYSTUDY01", "ADRS", usubjid, subjid, site,
+            arm, arm, "BOR", "Best Overall Response",
+            bor_aval, bor, "Y", "Y", "", "99", "End of Treatment",
+            adt_str, adtm_str,
+        ])
+
+        # ORR record (derived from BOR)
+        orr_c = "Responder" if bor in ("CR", "PR") else "Non-Responder"
+        orr_n = 1 if bor in ("CR", "PR") else 0
+        rows.append([
+            "MYSTUDY01", "ADRS", usubjid, subjid, site,
+            arm, arm, "ORR", "Overall Response Rate",
+            orr_n, orr_c, "Y", "Y", "", "99", "End of Treatment",
+            adt_str, adtm_str,
+        ])
+
+        # DCR record (derived from BOR)
+        dcr_c = "Controlled" if bor in ("CR", "PR", "SD") else "Not Controlled"
+        dcr_n = 1 if bor in ("CR", "PR", "SD") else 0
+        rows.append([
+            "MYSTUDY01", "ADRS", usubjid, subjid, site,
+            arm, arm, "DCR", "Disease Control Rate",
+            dcr_n, dcr_c, "Y", "Y", "", "99", "End of Treatment",
+            adt_str, adtm_str,
+        ])
+
+    out = OUT_DIR / "sample_adrs.csv"
+    with open(out, "w", newline="") as f:
+        writer = csv.writer(f)
+        writer.writerow(header)
+        writer.writerows(rows)
+    print(f"Saved: {out}  ({len(rows)} records, {len(arms)} subjects)")
+
+
+# ─────────────────────────────────────────────────────────────────
 if __name__ == "__main__":
     make_annotated_shell()
     make_adam_specs()
+    make_adrs_csv()
     print("Sample files created successfully.")

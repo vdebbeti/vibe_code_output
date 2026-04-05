@@ -26,15 +26,8 @@ BASE_DIR    = Path(__file__).parent
 DATA_DIR    = BASE_DIR / "data"
 SKILLS_PATH = BASE_DIR / "skills.md"
 
-# ── R package pre-installer (called only on user request) ────────────────────
-@st.cache_resource
-def _preinstall_r_packages(rscript_path: str) -> str:
-    """
-    Installs Tplyr and dependencies into ~/R/library.
-    Cached per server session — only runs once even if button is clicked again.
-    """
-    import subprocess, tempfile
-    install_script = r"""
+# ── R package pre-installer (background subprocess — survives Streamlit reruns)
+_INSTALL_R_SCRIPT = r"""
 local_lib <- path.expand("~/R/library")
 dir.create(local_lib, recursive = TRUE, showWarnings = FALSE)
 
@@ -60,14 +53,25 @@ for (pkg in pkgs) {
 }
 cat("Done.\n")
 """
+
+def _start_r_install(rscript_path: str) -> tuple:
+    """
+    Launch R package install as a detached subprocess.
+    Returns (subprocess.Popen, log_file_path).
+    The process runs independently of Streamlit reruns.
+    """
+    import subprocess, tempfile
     with tempfile.NamedTemporaryFile(delete=False, suffix=".R", mode="w") as f:
-        f.write(install_script)
-        tmp_path = f.name
-    result = subprocess.run(
-        [rscript_path, "--vanilla", tmp_path],
-        capture_output=True, text=True, timeout=600,
+        f.write(_INSTALL_R_SCRIPT)
+        script_path = f.name
+    log_path = script_path + ".log"
+    log_f = open(log_path, "w")
+    proc = subprocess.Popen(
+        [rscript_path, "--vanilla", script_path],
+        stdout=log_f,
+        stderr=subprocess.STDOUT,
     )
-    return (result.stdout + result.stderr).strip()
+    return proc, log_path, log_f
 
 # ── Page config ───────────────────────────────────────────────────────────────
 st.set_page_config(
@@ -374,24 +378,55 @@ tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
 with tab1:
     st.markdown("## Step 1 · Upload & Parse Mock Shell")
 
-    # ── R package pre-install ─────────────────────────────────────────────────
+    # ── R package pre-install (runs as background subprocess) ──────────────────
     from r_executor import _find_rscript as _detect_rscript
     _rscript_for_install = _detect_rscript()
+
+    # Show persistent install status banner (before the expander)
+    if st.session_state.get("_install_proc"):
+        _proc = st.session_state["_install_proc"]
+        if _proc.poll() is None:
+            st.info("📦 **R packages are installing in the background…** You can continue working.", icon="⏳")
+        else:
+            _log_path = st.session_state.get("_install_log_path", "")
+            _log_f = st.session_state.get("_install_log_f")
+            if _log_f:
+                try:
+                    _log_f.close()
+                except Exception:
+                    pass
+            _log_text = ""
+            if _log_path and os.path.exists(_log_path):
+                with open(_log_path, "r") as _f:
+                    _log_text = _f.read()
+            if _proc.returncode == 0:
+                st.success("📦 R packages installed successfully!", icon="✅")
+            else:
+                st.error("📦 Package installation failed. See log below.", icon="❌")
+            with st.expander("Install log", expanded=(_proc.returncode != 0)):
+                st.code(_log_text or "(empty log)", language="bash")
+            # Clear so banner doesn't persist forever
+            if st.button("Dismiss install status", key="dismiss_install"):
+                del st.session_state["_install_proc"]
+                st.rerun()
+
     with st.expander("📦 Pre-install R packages (recommended before first run)", expanded=False):
         st.markdown(
             "The R script installs **Tplyr, dplyr, haven, stringr, tidyr** automatically "
             "when it runs — but on cloud environments this can time out.\n\n"
-            "Click below to install them **now** in the background. "
-            "This only runs once per session."
+            "Click below to install them **in the background**. "
+            "You can continue uploading files and configuring the pipeline while it runs."
         )
-        if st.button("📦 Install R packages", disabled=not bool(_rscript_for_install)):
-            if not _rscript_for_install:
-                st.error("Rscript not found. Ensure R is installed.")
-            else:
-                with st.spinner("Installing R packages… this may take 3–5 minutes."):
-                    _install_log = _preinstall_r_packages(_rscript_for_install)
-                st.success("Packages installed successfully.")
-                st.code(_install_log, language="bash")
+        _install_running = st.session_state.get("_install_proc") and st.session_state["_install_proc"].poll() is None
+        if st.button(
+            "📦 Install R packages" if not _install_running else "⏳ Install in progress…",
+            disabled=not bool(_rscript_for_install) or _install_running,
+        ):
+            proc, log_path, log_f = _start_r_install(_rscript_for_install)
+            st.session_state["_install_proc"] = proc
+            st.session_state["_install_log_path"] = log_path
+            st.session_state["_install_log_f"] = log_f
+            st.rerun()
         if not _rscript_for_install:
             st.warning("Rscript not detected on this machine — button disabled.")
 
@@ -507,6 +542,14 @@ with tab1:
     else:
         st.info("Upload a file and click **Parse Shell → JSON** to begin.")
 
+    # ── Next Step indicator ───────────────────────────────────────────────────
+    if st.session_state.table_json:
+        st.markdown("---")
+        st.success(
+            "✅ **Step 1 complete!** → Click the **📑 2 · AdaM Specs** tab above to continue.",
+            icon="👉",
+        )
+
 
 # ═════════════════════════════════════════════════════════════════════════════
 # TAB 2 — AdaM Specs
@@ -606,6 +649,22 @@ with tab2:
         st.info("Upload an AdaM spec file and click **Parse AdaM Specs → JSON**.")
         st.caption("⚠️ Skipping is allowed — the LLM will use only the shell JSON and skills guide.")
 
+    # ── Next Step indicator ───────────────────────────────────────────────────
+    if st.session_state.adam_specs or st.session_state.table_json:
+        st.markdown("---")
+        if st.session_state.adam_specs:
+            st.success(
+                "✅ **Step 2 complete!** → Click the **🛠️ 3 · Skills Editor** tab to review R patterns, "
+                "or skip to **💻 4 · Generate & QC** to generate code.",
+                icon="👉",
+            )
+        else:
+            st.info(
+                "⏭️ **Skipping AdaM specs?** → Click the **🛠️ 3 · Skills Editor** tab or "
+                "go directly to **💻 4 · Generate & QC**.",
+                icon="👉",
+            )
+
 
 # ═════════════════════════════════════════════════════════════════════════════
 # TAB 3 — Skills Editor
@@ -628,6 +687,14 @@ with tab3:
         if st.button("💾 Save skills.md", type="primary"):
             SKILLS_PATH.write_text(skills_content, encoding="utf-8")
             st.success("skills.md saved.")
+
+    # ── Next Step indicator ───────────────────────────────────────────────────
+    if st.session_state.table_json:
+        st.markdown("---")
+        st.success(
+            "✅ **Skills reviewed!** → Click the **💻 4 · Generate & QC** tab to generate R code.",
+            icon="👉",
+        )
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -816,6 +883,15 @@ with tab4:
                                 mime="text/plain",
                             )
 
+        # ── Next Step indicator ───────────────────────────────────────────────
+        if st.session_state.r_code:
+            st.markdown("---")
+            st.success(
+                "✅ **R code ready!** → Click the **▶️ 5 · Run & Download** tab to execute the script "
+                "and download `final_df`.",
+                icon="👉",
+            )
+
 
 # ═════════════════════════════════════════════════════════════════════════════
 # TAB 5 — Run & Download
@@ -832,7 +908,7 @@ with tab5:
             icon="💡",
         )
         st.download_button(
-            label="⬇️ Download sample_adrs.csv (90 subjects · 3 arms · BOR)",
+            label="⬇️ Download sample_adrs.csv (90 subjects · 3 arms · BOR/ORR/DCR)",
             data=sample_adrs,
             file_name="sample_adrs.csv",
             mime="text/csv",
