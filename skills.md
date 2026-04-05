@@ -21,12 +21,19 @@ Your job is to convert a structured JSON table specification into a clean, execu
 # Auto-install required packages (writable user library for restricted environments)
 local_lib <- path.expand("~/R/library")
 dir.create(local_lib, recursive = TRUE, showWarnings = FALSE)
+locks <- list.files(local_lib, pattern = "^00LOCK-", full.names = TRUE)
+unlink(locks, recursive = TRUE)
 .libPaths(c(local_lib, .libPaths()))
 
 pkgs <- c("Tplyr", "dplyr", "haven", "stringr", "tidyr")
 for (pkg in pkgs) {
   if (!requireNamespace(pkg, quietly = TRUE)) {
-    install.packages(pkg, repos = "https://cloud.r-project.org", lib = local_lib)
+    install.packages(pkg,
+      repos        = "https://cloud.r-project.org",
+      lib          = local_lib,
+      dependencies = TRUE,
+      INSTALL_opts = "--no-lock",
+      Ncpus        = 1L)
   }
 }
 library(Tplyr)
