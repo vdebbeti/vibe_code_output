@@ -31,7 +31,7 @@ for (pkg in pkgs) {
     install.packages(pkg,
       repos        = "https://cloud.r-project.org",
       lib          = local_lib,
-      dependencies = TRUE,
+      dependencies = c("Depends", "Imports", "LinkingTo"),
       INSTALL_opts = "--no-lock",
       Ncpus        = 1L)
   }
