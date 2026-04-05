@@ -132,27 +132,44 @@ You will be given:
   2. The table shell JSON (what the output should look like)
   3. The AdaM specifications JSON (variable names, codelists, conditions)
 
-Your job is to review the R script and identify any issues. Check for:
-  - Incorrect or invented variable names (must match AdaM specs exactly)
-  - Missing population flag filters (e.g. FASFL='Y', ANL01FL='Y')
-  - Missing or wrong PARAMCD filter
-  - Wrong treatment variable (TRTP vs TRTA vs TRT01P)
-  - Wrong Tplyr function (group_desc vs group_count)
-  - Missing add_total_group() when a Total column is specified
-  - Missing set_distinct_by(USUBJID) for AE tables
-  - final_df not being created or not being a flat data frame
-  - Any R syntax errors you can spot
+REVIEW ONLY — CHECK FOR THESE SPECIFIC ISSUES:
+  - R syntax errors (unmatched braces, missing commas, wrong function calls)
+  - Variable names that do NOT exist in the AdaM specs key_variables
+  - final_df not being created or assigned
+  - Tplyr API misuse: string passed to by= instead of a data variable name
+  - Tplyr API misuse: multiple layers for different categories of the same variable
+  - Missing install.packages() lib= parameter (should use local_lib)
+
+DO NOT FLAG THESE — THEY ARE COMMON FALSE POSITIVES:
+  - Do NOT flag filter conditions as "wrong" or "missing" if you are unsure.
+    The user may have intentionally chosen specific filters. If the AdaM specs
+    list population_flags and the script uses them, that is CORRECT — do not
+    suggest changing, adding, or removing filter() conditions.
+  - Do NOT flag PARAMCD filter choices. The user decides which PARAMCD to use.
+  - Do NOT flag treatment variable choice (TRTP vs TRTA) — both are valid.
+  - Do NOT suggest cosmetic changes, code style changes, or "improvements"
+    that don't fix an actual bug.
+  - Do NOT rewrite working code in corrected_code. If you provide corrected_code,
+    it MUST be identical to the original except for the specific lines that fix
+    the identified ERROR-severity issues.
+
+SEVERITY GUIDELINES:
+  - ERROR: Will cause the script to crash (syntax error, missing variable, API misuse)
+  - WARNING: Might produce wrong results (e.g. variable not in specs but might exist)
+  - INFO: Suggestion only — never auto-correct INFO items
 
 Return a JSON object with this exact schema — no markdown fences:
 {
   "qc_passed": true/false,
   "issues": [
-    {"severity": "ERROR|WARNING|INFO", "line_hint": "<fragment of code near the issue>", "description": "<what is wrong and how to fix it>"}
+    {"severity": "ERROR|WARNING|INFO", "line_hint": "<fragment>", "description": "<what is wrong>"}
   ],
-  "corrected_code": "<full corrected R script, or empty string if no corrections needed>"
+  "corrected_code": "<full corrected R script ONLY if there are ERROR issues, otherwise empty string>"
 }
 
-If there are no issues, return qc_passed=true, issues=[], corrected_code="".
+IMPORTANT: Only set qc_passed=false if there are ERROR-severity issues.
+WARNING and INFO alone should NOT fail QC.
+If there are no ERROR issues: qc_passed=true, corrected_code="".
 """
 
 
@@ -437,7 +454,7 @@ Rules for the fix:
 - final_df must be a plain data frame (not a gt, flextable, or other object)
 - Use data_path as the dataset path variable — never hardcode a file path
 - Never call install.packages() without lib = path.expand("~/R/library")
-- The proper package install block using local_lib is already at the top — keep it
+- The proper package install block using local_lib is already at the top — KEEP IT EXACTLY AS-IS
 - For Tplyr: by= must be a data column name or omitted — never a string label
 - One group_count/group_desc layer per analysis variable — not one per category
 - Do not include file-writing, gt, flextable, knitr, or RTF output code
@@ -445,12 +462,19 @@ Rules for the fix:
   specs. The error "assert_quo_var_present" means a column name in a Tplyr layer
   does not exist in the dataset — remove or correct that layer using the exact column
   name from AdaM specs (e.g. AVAL, AVALC, USUBJID), never an invented name.
+- MINIMAL CHANGES ONLY: Fix ONLY what the error log says is broken. Do NOT rewrite
+  working code, do NOT remove existing filter() conditions, do NOT remove existing
+  PARAMCD or ANL01FL or FASFL filters, do NOT simplify or restructure code that was
+  already correct. Your job is a surgical fix of the specific error, not a rewrite.
 """
 
     raw = call_llm(
         system=(
             "You are an expert R programmer specializing in clinical trial TLFs. "
-            "Fix the broken R script and return only the corrected R code."
+            "Fix the broken R script and return only the corrected R code. "
+            "Make MINIMAL changes — only fix what the error says is broken. "
+            "Do NOT remove filter() conditions, do NOT remove install.packages() blocks, "
+            "do NOT simplify or restructure working code. Surgical fix only."
         ),
         user=user_msg,
         provider=provider,
