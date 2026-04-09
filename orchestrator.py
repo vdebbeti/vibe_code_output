@@ -96,7 +96,10 @@ ABSOLUTE RULES — THESE ARE NON-NEGOTIABLE:
    BAD:  8 layers all with var="AVALC" but different string by_var labels
    GOOD: 1 layer with var="AVALC", by_var=null — Tplyr auto-creates one row per unique value
 
-3. AE/SOC-PT tables: var="AEBODSYS", nested_var="AEDECOD", distinct_by="USUBJID"
+3. AE/SOC-PT tables: MUST use ONE layer with var="AEBODSYS", nested_var="AEDECOD", distinct_by="USUBJID".
+   NEVER create separate layers for SOC and PT — they are nested in a SINGLE group_count() call.
+   BAD:  layer 1 with var="AEDECOD", layer 2 with var="AEBODSYS" (WRONG — two layers)
+   GOOD: 1 layer with var="AEBODSYS", nested_var="AEDECOD" (correct — one nested layer)
 
 4. Response/efficacy tables (BOR, ORR, DCR):
    - For AVALC categories: 1 layer, var="AVALC", by_var=null, distinct_by="USUBJID"

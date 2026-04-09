@@ -1,8 +1,8 @@
 """
 Generates sample data files for TLF Output Generator:
-  1. sample_shell_annotated.png  — annotated oncology efficacy mock shell
-  2. sample_adam_specs.xlsx      — ADRS AdaM specs (Variable Level + Value Level)
-  3. sample_adrs.csv             — 90-subject ADRS dataset (BOR + ORR + DCR)
+  1. sample_shell_annotated.png  — annotated AE SOC-by-PT mock shell
+  2. sample_adae_spec.xlsx       — ADAE AdaM specs (Variable Level)
+  3. sample_adae.csv             — 90-subject ADAE dataset
 Run once:  python data/generate_samples.py
 """
 
@@ -15,7 +15,7 @@ from datetime import datetime, timedelta
 OUT_DIR = Path(__file__).parent
 
 # ─────────────────────────────────────────────────────────────────
-# 1. Annotated PNG mock shell
+# 1. Annotated PNG mock shell — AE SOC by PT
 # ─────────────────────────────────────────────────────────────────
 def make_annotated_shell():
     from PIL import Image, ImageDraw, ImageFont
@@ -27,7 +27,7 @@ def make_annotated_shell():
     HEADER_FG   = (255, 255, 255)
     ALT_ROW     = (240, 245, 255)
     BORDER      = (180, 190, 210)
-    ANN_BOX     = (255, 80,  40)   # annotation callout colour
+    ANN_BOX     = (255, 80,  40)
     ANN_TEXT    = (200, 30,  10)
     ANN_LINE    = (220, 60,  20)
     GRID_LINE   = (210, 215, 225)
@@ -35,7 +35,6 @@ def make_annotated_shell():
     img  = Image.new("RGB", (W, H), BG)
     draw = ImageDraw.Draw(img)
 
-    # ── try to load a decent system font; fall back gracefully ──
     def font(size, bold=False):
         candidates = [
             "C:/Windows/Fonts/arialbd.ttf" if bold else "C:/Windows/Fonts/arial.ttf",
@@ -55,9 +54,9 @@ def make_annotated_shell():
     f_ann_sm  = font(9)
 
     # ── table geometry ──
-    L, T = 60, 120          # left / top of table body
-    COL_W = [220, 150, 150, 150, 150]   # stub + 4 data cols
-    ROW_H = 28
+    L, T = 60, 120
+    COL_W = [280, 150, 150, 150, 150]
+    ROW_H = 26
     COLS  = len(COL_W)
 
     col_x = [L]
@@ -66,14 +65,14 @@ def make_annotated_shell():
     TABLE_W = sum(COL_W)
 
     # ── title block ──
-    draw.text((L, 18), "TLF Output Generator — Sample Oncology Efficacy Shell", font=f_title, fill=BLACK)
-    draw.text((L, 38), "Table 14.3.1: Summary of Tumor Response by Best Overall Response", font=f_title, fill=BLACK)
-    draw.text((L, 56), "Full Analysis Set (FAS) | Data Source: ADRS", font=f_sub, fill=(80, 80, 80))
-    draw.text((L, 72), "Parameter: Best Overall Response (PARAMCD = 'BOR')", font=f_sub, fill=(80, 80, 80))
+    draw.text((L, 18), "TLF Output Generator — Sample Adverse Events Shell", font=f_title, fill=BLACK)
+    draw.text((L, 38), "Table 14.3.1: Summary of Adverse Events by System Organ Class and Preferred Term", font=f_title, fill=BLACK)
+    draw.text((L, 56), "Safety Analysis Set (SAFFL = 'Y') | Data Source: ADAE", font=f_sub, fill=(80, 80, 80))
+    draw.text((L, 72), "Treatment-Emergent Adverse Events (TRTEMFL = 'Y')", font=f_sub, fill=(80, 80, 80))
     draw.line([(L, 94), (L + TABLE_W, 94)], fill=BORDER, width=1)
 
     # ── header row ──
-    headers = ["Response Category", "Placebo\n(N=xx)", "Drug A 50mg\n(N=xx)", "Drug A 100mg\n(N=xx)", "Total\n(N=xx)"]
+    headers = ["System Organ Class\n  Preferred Term", "Placebo\n(N=xx)", "Drug A 50mg\n(N=xx)", "Drug A 100mg\n(N=xx)", "Total\n(N=xx)"]
     draw.rectangle([L, T, L + TABLE_W, T + ROW_H * 2], fill=HEADER_BG)
     for i, (hdr, x) in enumerate(zip(headers, col_x)):
         lines = hdr.split("\n")
@@ -82,18 +81,19 @@ def make_annotated_shell():
 
     # ── data rows ──
     rows = [
-        ("Best Overall Response",             "",         "",         "",         ""),
-        ("  Complete Response (CR)",           "x (x.x%)", "x (x.x%)", "x (x.x%)", "x (x.x%)"),
-        ("  Partial Response (PR)",            "x (x.x%)", "x (x.x%)", "x (x.x%)", "x (x.x%)"),
-        ("  Stable Disease (SD)",              "x (x.x%)", "x (x.x%)", "x (x.x%)", "x (x.x%)"),
-        ("  Progressive Disease (PD)",         "x (x.x%)", "x (x.x%)", "x (x.x%)", "x (x.x%)"),
-        ("  Not Evaluable / Missing",          "x (x.x%)", "x (x.x%)", "x (x.x%)", "x (x.x%)"),
-        ("Overall Response Rate (CR+PR)",      "x (x.x%)", "x (x.x%)", "x (x.x%)", "x (x.x%)"),
-        ("  95% CI (Clopper-Pearson)",         "(x.x, x.x)","(x.x, x.x)","(x.x, x.x)","(x.x, x.x)"),
-        ("Disease Control Rate (CR+PR+SD)",    "x (x.x%)", "x (x.x%)", "x (x.x%)", "x (x.x%)"),
-        ("  95% CI (Clopper-Pearson)",         "(x.x, x.x)","(x.x, x.x)","(x.x, x.x)","(x.x, x.x)"),
-        ("Duration of Response (months)",      "",         "",         "",         ""),
-        ("  Median (95% CI)",                  "x.x (x.x, x.x)","x.x (x.x, x.x)","x.x (x.x, x.x)","x.x (x.x, x.x)"),
+        ("Any adverse event",                  "x (x.x%)", "x (x.x%)", "x (x.x%)", "x (x.x%)"),
+        ("Gastrointestinal disorders",         "x (x.x%)", "x (x.x%)", "x (x.x%)", "x (x.x%)"),
+        ("  Nausea",                           "x (x.x%)", "x (x.x%)", "x (x.x%)", "x (x.x%)"),
+        ("  Diarrhea",                         "x (x.x%)", "x (x.x%)", "x (x.x%)", "x (x.x%)"),
+        ("  Vomiting",                         "x (x.x%)", "x (x.x%)", "x (x.x%)", "x (x.x%)"),
+        ("General disorders",                  "x (x.x%)", "x (x.x%)", "x (x.x%)", "x (x.x%)"),
+        ("  Fatigue",                          "x (x.x%)", "x (x.x%)", "x (x.x%)", "x (x.x%)"),
+        ("  Pyrexia",                          "x (x.x%)", "x (x.x%)", "x (x.x%)", "x (x.x%)"),
+        ("Nervous system disorders",           "x (x.x%)", "x (x.x%)", "x (x.x%)", "x (x.x%)"),
+        ("  Headache",                         "x (x.x%)", "x (x.x%)", "x (x.x%)", "x (x.x%)"),
+        ("  Dizziness",                        "x (x.x%)", "x (x.x%)", "x (x.x%)", "x (x.x%)"),
+        ("Skin and subcutaneous disorders",    "x (x.x%)", "x (x.x%)", "x (x.x%)", "x (x.x%)"),
+        ("  Rash",                             "x (x.x%)", "x (x.x%)", "x (x.x%)", "x (x.x%)"),
     ]
 
     body_top = T + ROW_H * 2
@@ -104,28 +104,23 @@ def make_annotated_shell():
         draw.rectangle([L, y0, L + TABLE_W, y1], fill=bg)
         for c_idx, (cell, x) in enumerate(zip(row, col_x)):
             bold = (c_idx == 0 and not row[0].startswith("  "))
-            draw.text((x + 6, y0 + 6), cell, font=f_hdr if bold else f_cell, fill=BLACK)
+            draw.text((x + 6, y0 + 5), cell, font=f_hdr if bold else f_cell, fill=BLACK)
 
     # ── grid lines ──
     total_rows = len(rows)
     table_bottom = body_top + total_rows * ROW_H
-    # horizontal
     for r in range(total_rows + 1):
         y = body_top + r * ROW_H
         draw.line([(L, y), (L + TABLE_W, y)], fill=GRID_LINE, width=1)
-    # vertical
     for x in col_x:
         draw.line([(x, T), (x, table_bottom)], fill=GRID_LINE, width=1)
     draw.line([(L + TABLE_W, T), (L + TABLE_W, table_bottom)], fill=GRID_LINE, width=1)
-    # outer border
     draw.rectangle([L, T, L + TABLE_W, table_bottom], outline=BORDER, width=2)
 
     # ── annotations ──
     def callout(ax, ay, bx, by, label, sub=""):
-        """Draw annotation arrow from (ax,ay) to (bx,by) with a label box."""
         draw.line([(ax, ay), (bx, by)], fill=ANN_LINE, width=2)
         draw.ellipse([(bx-4, by-4), (bx+4, by+4)], fill=ANN_LINE)
-        # box
         bw = max(len(label), len(sub)) * 7 + 10
         bh = 30 if sub else 18
         draw.rectangle([(ax-4, ay-bh), (ax+bw, ay+4)], fill=(255, 245, 240), outline=ANN_BOX, width=1)
@@ -135,39 +130,39 @@ def make_annotated_shell():
 
     # Annotation 1: Dataset
     callout(ax=720, ay=T-12, bx=col_x[0]+110, by=T+12,
-            label="Dataset: ADRS",
-            sub="adam_specs → dataset_source")
+            label="Dataset: ADAE",
+            sub="adam_specs -> dataset_source")
 
-    # Annotation 2: PARAMCD filter
-    callout(ax=750, ay=T+62, bx=col_x[0]+60, by=body_top+4,
-            label="Filter: PARAMCD = 'BOR'",
-            sub="(Best Overall Response record)")
+    # Annotation 2: SOC variable
+    callout(ax=730, ay=body_top+50, bx=col_x[0]+80, by=body_top + 1*ROW_H + 10,
+            label="SOC var: AEBODSYS",
+            sub="(System Organ Class grouping)")
 
-    # Annotation 3: AVALC variable
-    callout(ax=730, ay=body_top+90, bx=col_x[0]+50, by=body_top + 1*ROW_H + 14,
-            label="analysis_var: AVALC",
-            sub="Response category (CR/PR/SD/PD)")
+    # Annotation 3: PT variable
+    callout(ax=730, ay=body_top+130, bx=col_x[0]+50, by=body_top + 2*ROW_H + 10,
+            label="PT var: AEDECOD",
+            sub="(Preferred Term — indented rows)")
 
-    # Annotation 4: ORR derived row
-    callout(ax=730, ay=body_top+200, bx=col_x[0]+80, by=body_top + 6*ROW_H + 14,
-            label="Derived: ORR = AVALC in (CR, PR)",
-            sub="Condition from adam_specs codelist")
+    # Annotation 4: Count distinct subjects
+    callout(ax=740, ay=body_top+210, bx=col_x[1]+50, by=body_top + 2*ROW_H + 10,
+            label="Count: n (%) distinct USUBJID",
+            sub="distinct_by = USUBJID")
 
     # Annotation 5: Treatment column
     callout(ax=800, ay=H-60, bx=col_x[2]+75, by=T+10,
-            label="Treatment var: TRTP",
-            sub="(planned treatment variable)")
+            label="Treatment var: TRTA",
+            sub="(actual treatment variable)")
 
     # ── footnote ──
     draw.line([(L, table_bottom + 10), (L + TABLE_W, table_bottom + 10)], fill=BORDER, width=1)
     draw.text((L, table_bottom + 16), "Note: Percentages based on number of subjects in each treatment group (N).", font=f_ann_sm, fill=(80,80,80))
-    draw.text((L, table_bottom + 30), "CI = Confidence Interval; CR = Complete Response; PR = Partial Response; SD = Stable Disease; PD = Progressive Disease.", font=f_ann_sm, fill=(80,80,80))
+    draw.text((L, table_bottom + 30), "Subjects counted once per SOC and once per PT, even if multiple occurrences.", font=f_ann_sm, fill=(80,80,80))
 
     # ── legend box ──
     lx, ly = L, H - 55
     draw.rectangle([(lx, ly), (lx+500, ly+45)], fill=(255,250,240), outline=ANN_BOX, width=1)
     draw.text((lx+6, ly+4),  "ANNOTATION LEGEND", font=f_ann, fill=ANN_TEXT)
-    draw.text((lx+6, ly+18), "Red callouts = metadata used to generate R code (dataset, variables, filters, conditions)", font=f_ann_sm, fill=ANN_TEXT)
+    draw.text((lx+6, ly+18), "Red callouts = metadata used to generate R code (dataset, variables, grouping)", font=f_ann_sm, fill=ANN_TEXT)
     draw.text((lx+6, ly+32), "Upload this shell in Step 1 · Upload AdaM specs in Step 2 · Generate R code in Step 4", font=f_ann_sm, fill=ANN_TEXT)
 
     out = OUT_DIR / "sample_shell_annotated.png"
@@ -176,7 +171,7 @@ def make_annotated_shell():
 
 
 # ─────────────────────────────────────────────────────────────────
-# 2. Sample AdaM specs Excel — Variable Level + Value Level
+# 2. Sample AdaM specs Excel — ADAE Variable Level
 # ─────────────────────────────────────────────────────────────────
 def make_adam_specs():
     import openpyxl
@@ -185,7 +180,6 @@ def make_adam_specs():
 
     wb = openpyxl.Workbook()
 
-    # ── helper styles ──
     HDR_FILL   = PatternFill("solid", fgColor="1E3C6E")
     HDR_FONT   = Font(bold=True, color="FFFFFF", size=10)
     CELL_FONT  = Font(size=9)
@@ -213,17 +207,16 @@ def make_adam_specs():
     ws1.title = "Variable_Level"
     ws1.sheet_view.showGridLines = False
 
-    # Title
     ws1.merge_cells("A1:H1")
     t = ws1["A1"]
-    t.value = "ADRS — Variable Level Metadata"
+    t.value = "ADAE — Variable Level Metadata"
     t.font = Font(bold=True, size=12, color="1E3C6E")
     t.alignment = Alignment(horizontal="center", vertical="center")
     ws1.row_dimensions[1].height = 24
 
     ws1.merge_cells("A2:H2")
     t2 = ws1["A2"]
-    t2.value = "Dataset: ADRS (Oncology Response) | Standard: CDISC ADaM v1.0 | Population: FASFL = 'Y'"
+    t2.value = "Dataset: ADAE (Adverse Events) | Standard: CDISC ADaM v1.0 | Population: SAFFL = 'Y'"
     t2.font = Font(italic=True, size=10, color="555555")
     t2.alignment = Alignment(horizontal="center")
 
@@ -231,19 +224,22 @@ def make_adam_specs():
     hdr_row(ws1, 3, cols)
 
     variables = [
-        ("STUDYID",  "Study Identifier",              "Char", 20,  "",                          "Req",    "",    "From SDTM DM.STUDYID"),
-        ("USUBJID",  "Unique Subject Identifier",     "Char", 40,  "",                          "Req",    "",    "From SDTM DM.USUBJID — primary merge key to ADSL"),
-        ("SUBJID",   "Subject Identifier",            "Char", 20,  "",                          "Req",    "",    "From SDTM DM.SUBJID"),
-        ("SITEID",   "Study Site Identifier",         "Char", 20,  "",                          "Perm",   "",    "From SDTM DM.SITEID"),
-        ("TRTP",     "Planned Treatment",             "Char", 200, "Placebo / Drug A 50mg / Drug A 100mg", "Req", "", "Mapped from ADSL.TRT01P — use for column grouping in tables"),
-        ("TRTA",     "Actual Treatment",              "Char", 200, "Placebo / Drug A 50mg / Drug A 100mg", "Req", "", "Mapped from ADSL.TRT01A — use for safety tables"),
-        ("PARAMCD",  "Parameter Code",                "Char", 8,   "BOR / ORR / DCR",           "Req",    "KEY", "Identifies the analysis parameter — filter on this variable"),
-        ("PARAM",    "Parameter Description",         "Char", 200, "",                          "Req",    "",    "Long description of PARAMCD"),
-        ("AVAL",     "Analysis Value (numeric)",      "Num",  8,   "1 = Yes/Responder, 0 = No/Non-resp", "Req", "",  "Numeric version of response flag — see Value Level for derivation"),
-        ("AVALC",    "Analysis Value (character)",    "Char", 200, "CR / PR / SD / PD / NE",    "Req",    "KEY", "Primary analysis variable — see Value Level for derivation per PARAMCD"),
-        ("ANL01FL",  "Analysis Record Flag",          "Char", 1,   "Y / N",                     "Req",    "KEY", "Y = include in primary analysis. Always filter: ANL01FL = 'Y'"),
-        ("FASFL",    "Full Analysis Set Flag",        "Char", 1,   "Y / N",                     "Req",    "KEY", "Y = subject in FAS population. Always filter: FASFL = 'Y'"),
-        ("ADT",      "Analysis Date",                 "Num",  8,   "",                          "Perm",   "",    "Date of tumor assessment (SAS date)"),
+        ("STUDYID",   "Study Identifier",              "Char", 20,  "",                          "Req",    "",    "From SDTM DM.STUDYID"),
+        ("USUBJID",   "Unique Subject Identifier",     "Char", 40,  "",                          "Req",    "KEY", "From SDTM DM.USUBJID — primary merge key"),
+        ("SUBJID",    "Subject Identifier",            "Char", 20,  "",                          "Req",    "",    "From SDTM DM.SUBJID"),
+        ("SITEID",    "Study Site Identifier",         "Char", 20,  "",                          "Perm",   "",    "From SDTM DM.SITEID"),
+        ("TRTA",      "Actual Treatment",              "Char", 200, "Placebo / Drug A 50mg / Drug A 100mg", "Req", "", "Mapped from ADSL.TRT01A — use for column grouping in AE tables"),
+        ("TRTP",      "Planned Treatment",             "Char", 200, "Placebo / Drug A 50mg / Drug A 100mg", "Req", "", "Mapped from ADSL.TRT01P"),
+        ("AEBODSYS",  "Body System or Organ Class",    "Char", 200, "MedDRA SOC",                "Req",    "",    "System Organ Class from MedDRA coding — use for row grouping"),
+        ("AEDECOD",   "Dictionary-Derived Term",       "Char", 200, "MedDRA PT",                 "Req",    "",    "Preferred Term from MedDRA coding — use for row sub-grouping under SOC"),
+        ("AETERM",    "Reported Term for the AE",      "Char", 200, "",                          "Req",    "",    "Verbatim adverse event term as reported by the investigator"),
+        ("AESEV",     "Severity/Intensity",            "Char", 20,  "MILD / MODERATE / SEVERE",  "Perm",   "",    "Severity grade of the adverse event"),
+        ("AESER",     "Serious Event",                 "Char", 1,   "Y / N",                     "Perm",   "",    "Y = serious adverse event"),
+        ("AEREL",     "Causality",                     "Char", 20,  "RELATED / NOT RELATED / POSSIBLE", "Perm", "", "Investigator assessment of relationship to study drug"),
+        ("TRTEMFL",   "Treatment-Emergent Flag",       "Char", 1,   "Y",                         "Req",    "",    "Y = treatment-emergent AE. Always filter: TRTEMFL = 'Y'"),
+        ("SAFFL",     "Safety Population Flag",        "Char", 1,   "Y / N",                     "Req",    "",    "Y = subject in safety population. Always filter: SAFFL = 'Y'"),
+        ("ASTDT",     "Analysis Start Date",           "Num",  8,   "",                          "Perm",   "",    "Start date of adverse event (SAS date)"),
+        ("AENDT",     "Analysis End Date",             "Num",  8,   "",                          "Perm",   "",    "End date of adverse event (SAS date, may be missing if ongoing)"),
     ]
 
     for i, row in enumerate(variables):
@@ -253,110 +249,65 @@ def make_adam_specs():
     for col, w in enumerate(widths, 1):
         ws1.column_dimensions[get_column_letter(col)].width = w
 
-    # ══════════════════════════════════════════════════════════════
-    # Sheet 2: Value Level — derivation per PARAMCD
-    # ══════════════════════════════════════════════════════════════
-    ws2 = wb.create_sheet("Value_Level")
-    ws2.sheet_view.showGridLines = False
-
-    ws2.merge_cells("A1:I1")
-    t = ws2["A1"]
-    t.value = "ADRS — Value Level Metadata (Derivation per PARAMCD)"
-    t.font = Font(bold=True, size=12, color="1E3C6E")
-    t.alignment = Alignment(horizontal="center", vertical="center")
-    ws2.row_dimensions[1].height = 24
-
-    ws2.merge_cells("A2:I2")
-    t2 = ws2["A2"]
-    t2.value = "Each row describes how AVALC and AVAL are derived for a given PARAMCD value"
-    t2.font = Font(italic=True, size=10, color="555555")
-    t2.alignment = Alignment(horizontal="center")
-
-    hdr_row(ws2, 3, [
-        "PARAMCD", "PARAM (Description)", "Source",
-        "AVALC Derivation", "AVALC Possible Values",
-        "AVAL Derivation",
-        "Population Filter", "Analysis Flag", "Table Reference",
-    ])
-
-    value_rows = [
-        (
-            "BOR",
-            "Best Overall Response",
-            "SDTM RS / TU domains",
-            "Best confirmed response per RECIST 1.1: take the best response "
-            "across all post-baseline tumor assessments. CR > PR > SD > PD > NE.",
-            "CR = Complete Response\n"
-            "PR = Partial Response\n"
-            "SD = Stable Disease\n"
-            "PD = Progressive Disease\n"
-            "NE = Not Evaluable",
-            "AVAL = 1 if AVALC in ('CR','PR') else 0\n(binary responder flag)",
-            "FASFL = 'Y'",
-            "ANL01FL = 'Y'",
-            "Table 14.3.1\nTumor Response",
-        ),
-        (
-            "ORR",
-            "Overall Response Rate",
-            "Derived from BOR record",
-            "If subject's BOR AVALC in ('CR','PR') then AVALC = 'Responder', "
-            "else AVALC = 'Non-Responder'.\nOne record per subject.",
-            "Responder\nNon-Responder",
-            "AVAL = 1 if Responder, 0 if Non-Responder",
-            "FASFL = 'Y'",
-            "ANL01FL = 'Y'",
-            "Table 14.3.2\nOverall Response Rate",
-        ),
-        (
-            "DCR",
-            "Disease Control Rate",
-            "Derived from BOR record",
-            "If subject's BOR AVALC in ('CR','PR','SD') then AVALC = 'Controlled', "
-            "else AVALC = 'Not Controlled'.\nOne record per subject.",
-            "Controlled\nNot Controlled",
-            "AVAL = 1 if Controlled, 0 if Not Controlled",
-            "FASFL = 'Y'",
-            "ANL01FL = 'Y'",
-            "Table 14.3.3\nDisease Control Rate",
-        ),
-    ]
-
-    for i, row in enumerate(value_rows):
-        data_row(ws2, i + 4, row, alt=(i % 2 == 1))
-        ws2.row_dimensions[i + 4].height = 72  # taller rows for multiline text
-
-    ws2_widths = [10, 24, 20, 44, 28, 32, 14, 14, 18]
-    for col, w in enumerate(ws2_widths, 1):
-        ws2.column_dimensions[get_column_letter(col)].width = w
-
-    out = OUT_DIR / "sample_adam_specs.xlsx"
+    out = OUT_DIR / "sample_adae_spec.xlsx"
     wb.save(str(out))
     print(f"Saved: {out}")
 
 
 # ─────────────────────────────────────────────────────────────────
-# 3. Sample ADRS CSV — 90 subjects × 3 arms × (BOR + ORR + DCR)
+# 3. Sample ADAE CSV — 90 subjects × 3 arms, ~3-5 AEs each
 # ─────────────────────────────────────────────────────────────────
-def make_adrs_csv():
+def make_adae_csv():
     random.seed(42)
 
     arms = ["Placebo"] * 30 + ["Drug A 50mg"] * 30 + ["Drug A 100mg"] * 30
     sites = ["001", "002", "003", "004"]
-    bor_weights = {
-        "Placebo":        {"CR": 0.03, "PR": 0.10, "SD": 0.30, "PD": 0.45, "NE": 0.12},
-        "Drug A 50mg":    {"CR": 0.08, "PR": 0.22, "SD": 0.35, "PD": 0.25, "NE": 0.10},
-        "Drug A 100mg":   {"CR": 0.15, "PR": 0.28, "SD": 0.30, "PD": 0.18, "NE": 0.09},
+
+    # SOC -> list of PTs with relative weights
+    ae_dict = {
+        "GASTROINTESTINAL DISORDERS": [
+            ("NAUSEA", 0.30), ("DIARRHEA", 0.25), ("VOMITING", 0.20),
+            ("ABDOMINAL PAIN", 0.15), ("CONSTIPATION", 0.10),
+        ],
+        "GENERAL DISORDERS AND ADMINISTRATION SITE CONDITIONS": [
+            ("FATIGUE", 0.40), ("PYREXIA", 0.30), ("OEDEMA PERIPHERAL", 0.15),
+            ("ASTHENIA", 0.15),
+        ],
+        "NERVOUS SYSTEM DISORDERS": [
+            ("HEADACHE", 0.40), ("DIZZINESS", 0.30), ("SOMNOLENCE", 0.15),
+            ("PARAESTHESIA", 0.15),
+        ],
+        "SKIN AND SUBCUTANEOUS TISSUE DISORDERS": [
+            ("RASH", 0.40), ("PRURITUS", 0.30), ("ALOPECIA", 0.15),
+            ("DRY SKIN", 0.15),
+        ],
+        "MUSCULOSKELETAL AND CONNECTIVE TISSUE DISORDERS": [
+            ("ARTHRALGIA", 0.40), ("MYALGIA", 0.30), ("BACK PAIN", 0.30),
+        ],
+        "INFECTIONS AND INFESTATIONS": [
+            ("UPPER RESPIRATORY TRACT INFECTION", 0.35),
+            ("NASOPHARYNGITIS", 0.35), ("URINARY TRACT INFECTION", 0.30),
+        ],
     }
 
-    def pick_bor(arm):
-        w = bor_weights[arm]
-        return random.choices(list(w.keys()), weights=list(w.values()), k=1)[0]
+    soc_list = list(ae_dict.keys())
+    severities = ["MILD", "MODERATE", "SEVERE"]
+    sev_weights = [0.55, 0.35, 0.10]
+    rel_values = ["NOT RELATED", "POSSIBLE", "RELATED"]
+    rel_weights = [0.50, 0.30, 0.20]
+
+    # Drug arms get more AEs on average
+    ae_count_range = {
+        "Placebo":      (1, 4),
+        "Drug A 50mg":  (2, 5),
+        "Drug A 100mg": (2, 6),
+    }
 
     header = [
         "STUDYID", "DOMAIN", "USUBJID", "SUBJID", "SITEID",
-        "TRTP", "TRTA", "PARAMCD", "PARAM", "AVAL", "AVALC",
-        "ANL01FL", "FASFL", "DTYPE", "VISITNUM", "VISIT", "ADT", "ADTM",
+        "TRTA", "TRTP", "AEBODSYS", "AEDECOD", "AETERM",
+        "AESEV", "AESER", "AEREL", "TRTEMFL", "SAFFL",
+        "ASTDT", "AENDT",
     ]
 
     rows = []
@@ -366,41 +317,32 @@ def make_adrs_csv():
         subjid = f"{subj_idx:04d}"
         site = random.choice(sites)
         usubjid = f"MYSTUDY01-{site}-{subjid}"
-        adt = base_date + timedelta(days=random.randint(0, 60))
-        adt_str = adt.strftime("%Y-%m-%d")
-        adtm_str = adt.strftime("%Y-%m-%dT%H:%M:00")
 
-        # BOR record
-        bor = pick_bor(arm)
-        bor_aval = 1 if bor in ("CR", "PR") else 0
-        rows.append([
-            "MYSTUDY01", "ADRS", usubjid, subjid, site,
-            arm, arm, "BOR", "Best Overall Response",
-            bor_aval, bor, "Y", "Y", "", "99", "End of Treatment",
-            adt_str, adtm_str,
-        ])
+        n_aes = random.randint(*ae_count_range[arm])
+        # Pick random SOCs for this subject's AEs
+        chosen_socs = random.choices(soc_list, k=n_aes)
 
-        # ORR record (derived from BOR)
-        orr_c = "Responder" if bor in ("CR", "PR") else "Non-Responder"
-        orr_n = 1 if bor in ("CR", "PR") else 0
-        rows.append([
-            "MYSTUDY01", "ADRS", usubjid, subjid, site,
-            arm, arm, "ORR", "Overall Response Rate",
-            orr_n, orr_c, "Y", "Y", "", "99", "End of Treatment",
-            adt_str, adtm_str,
-        ])
+        for ae_i, soc in enumerate(chosen_socs):
+            pts, pt_wts = zip(*ae_dict[soc])
+            pt = random.choices(pts, weights=pt_wts, k=1)[0]
 
-        # DCR record (derived from BOR)
-        dcr_c = "Controlled" if bor in ("CR", "PR", "SD") else "Not Controlled"
-        dcr_n = 1 if bor in ("CR", "PR", "SD") else 0
-        rows.append([
-            "MYSTUDY01", "ADRS", usubjid, subjid, site,
-            arm, arm, "DCR", "Disease Control Rate",
-            dcr_n, dcr_c, "Y", "Y", "", "99", "End of Treatment",
-            adt_str, adtm_str,
-        ])
+            sev = random.choices(severities, weights=sev_weights, k=1)[0]
+            ser = "Y" if sev == "SEVERE" and random.random() < 0.5 else "N"
+            rel = random.choices(rel_values, weights=rel_weights, k=1)[0]
 
-    out = OUT_DIR / "sample_adrs.csv"
+            start = base_date + timedelta(days=random.randint(1, 90))
+            end = start + timedelta(days=random.randint(1, 30))
+            # ~10% ongoing (missing end date)
+            end_str = end.strftime("%Y-%m-%d") if random.random() > 0.10 else ""
+
+            rows.append([
+                "MYSTUDY01", "ADAE", usubjid, subjid, site,
+                arm, arm, soc, pt, pt,
+                sev, ser, rel, "Y", "Y",
+                start.strftime("%Y-%m-%d"), end_str,
+            ])
+
+    out = OUT_DIR / "sample_adae.csv"
     with open(out, "w", newline="") as f:
         writer = csv.writer(f)
         writer.writerow(header)
@@ -412,5 +354,5 @@ def make_adrs_csv():
 if __name__ == "__main__":
     make_annotated_shell()
     make_adam_specs()
-    make_adrs_csv()
+    make_adae_csv()
     print("Sample files created successfully.")

@@ -455,7 +455,7 @@ with tab1:
                 file_name="sample_shell_annotated.png",
                 mime="image/png",
                 use_container_width=True,
-                help="Annotated oncology efficacy mock shell",
+                help="Annotated AE SOC-by-PT mock shell",
             )
 
     uploaded_file = st.file_uploader(
@@ -573,15 +573,15 @@ with tab2:
             "and analysis conditions — feeding them directly into the code generator."
         )
     with col_dl2:
-        sample_specs = _sample_bytes("sample_adam_specs.xlsx")
+        sample_specs = _sample_bytes("sample_adae_spec.xlsx")
         if sample_specs:
             st.download_button(
                 label="⬇️ Sample AdaM specs",
                 data=sample_specs,
-                file_name="sample_adam_specs.xlsx",
+                file_name="sample_adae_spec.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 use_container_width=True,
-                help="Sample ADRS AdaM spec with variables, codelists, conditions",
+                help="Sample ADAE AdaM spec with variables and derivations",
             )
 
     adam_file = st.file_uploader(
@@ -757,6 +757,10 @@ with tab4:
             with st.spinner("Step 2/2 · Assembling R code from recipe…"):
                 try:
                     code = assemble_r_from_recipe(st.session_state.r_recipe)
+                    ds = meta.get("dataset_source", "dataset")
+                    code, san_warnings = _sanitise_r_code(code, ds)
+                    for w in san_warnings:
+                        st.warning(w, icon="🔧")
                     st.session_state.r_code    = code
                     st.session_state.qc_result = None
                     st.session_state.run_attempts = []
@@ -785,7 +789,9 @@ with tab4:
                         try:
                             new_recipe = json.loads(recipe_str)
                             st.session_state.r_recipe = new_recipe
-                            st.session_state.r_code   = assemble_r_from_recipe(new_recipe)
+                            reassembled = assemble_r_from_recipe(new_recipe)
+                            reassembled, _ = _sanitise_r_code(reassembled, meta.get("dataset_source", "dataset"))
+                            st.session_state.r_code   = reassembled
                             st.session_state.qc_result = None
                             st.session_state.run_attempts = []
                             st.success("R code re-assembled from edited recipe.")
@@ -908,17 +914,17 @@ with tab5:
     st.markdown("## Step 5 · Run R Script & Download Results")
 
     # ── Sample dataset download ───────────────────────────────────────────────
-    sample_adrs = _sample_bytes("sample_adrs.csv")
-    if sample_adrs:
+    sample_adae = _sample_bytes("sample_adae.csv")
+    if sample_adae:
         st.info(
-            "**New to the tool?** Use the sample ADRS dataset below — it matches the sample "
+            "**New to the tool?** Use the sample ADAE dataset below — it matches the sample "
             "AdaM specs (Tab 2) and sample mock shell (Tab 1) exactly.",
             icon="💡",
         )
         st.download_button(
-            label="⬇️ Download sample_adrs.csv (90 subjects · 3 arms · BOR/ORR/DCR)",
-            data=sample_adrs,
-            file_name="sample_adrs.csv",
+            label="⬇️ Download sample_adae.csv (90 subjects · 3 arms · AE SOC/PT)",
+            data=sample_adae,
+            file_name="sample_adae.csv",
             mime="text/csv",
             use_container_width=False,
         )
@@ -1042,6 +1048,7 @@ with tab5:
                                     provider=provider,
                                     model=model,
                                 )
+                                fixed_code, _ = _sanitise_r_code(fixed_code, meta.get("dataset_source", "dataset"))
                                 current_code = fixed_code
                                 st.session_state.r_code = fixed_code
                             except Exception as fix_err:

@@ -111,6 +111,9 @@ final_df <- t %>% build()
 ```
 - `AEBODSYS` = System Organ Class (SOC) — the parent grouping variable
 - `AEDECOD` = Preferred Term (PT) — the nested variable
+- **CRITICAL**: SOC and PT must be in ONE layer as `vars(AEBODSYS, AEDECOD)` — NEVER separate layers
+- **WRONG**: `add_layer(group_count(AEDECOD))` + `add_layer(group_count(AEBODSYS))` — two layers is WRONG
+- **CORRECT**: `add_layer(group_count(vars(AEBODSYS, AEDECOD)))` — one nested layer
 - Always use `set_distinct_by(USUBJID)` to count unique subjects, not events
 - If severity columns exist (Mild/Moderate/Severe), add `set_where()` per layer or filter `adae` by `AESEV` before tabling
 
