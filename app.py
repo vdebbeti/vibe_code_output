@@ -16,7 +16,15 @@ from dotenv import load_dotenv
 
 from parser import parse_png, parse_docx, parse_pdf
 from adam_parser import parse_adam_excel, parse_adam_pdf, parse_adam_docx
-from orchestrator import generate_r_script, generate_r_recipe, assemble_r_from_recipe, qc_r_script, fix_r_script, _PACKAGE_BLOCK
+from orchestrator import (
+    generate_r_script,
+    generate_r_recipe,
+    assemble_r_from_recipe,
+    assemble_sas_from_recipe,
+    qc_r_script,
+    fix_r_script,
+    _PACKAGE_BLOCK,
+)
 from r_executor import run_r_script
 from llm_client import PROVIDER_MODELS, PROVIDER_KEY_LABELS, PROVIDER_KEY_PLACEHOLDERS, PROVIDER_KEY_HELP
 
@@ -165,6 +173,7 @@ with st.sidebar:
     _badge(ss.get("table_json"),   "Shell parsed → JSON")
     _badge(ss.get("adam_specs"),   "AdaM specs loaded")
     _badge(ss.get("r_code"),       "R script generated")
+    _badge(ss.get("sas_code"),     "SAS program generated")
 
     qc = ss.get("qc_result")
     if qc is None:
@@ -272,6 +281,7 @@ for key, default in {
     "adam_specs":       None,
     "r_recipe":         None,
     "r_code":           "",
+    "sas_code":         "",
     "qc_result":        None,
     "result_csv_path":  None,
     "run_log":          "",
@@ -753,8 +763,8 @@ with tab4:
                     st.error(f"Recipe generation failed: {e}")
                     st.stop()
 
-            # Step 2: assemble R code from recipe
-            with st.spinner("Step 2/2 · Assembling R code from recipe…"):
+            # Step 2: assemble R code from recipe (and SAS code from the same recipe)
+            with st.spinner("Step 2/2 · Assembling R + SAS code from recipe…"):
                 try:
                     code = assemble_r_from_recipe(st.session_state.r_recipe)
                     ds = meta.get("dataset_source", "dataset")
@@ -762,9 +772,14 @@ with tab4:
                     for w in san_warnings:
                         st.warning(w, icon="🔧")
                     st.session_state.r_code    = code
+                    try:
+                        st.session_state.sas_code = assemble_sas_from_recipe(st.session_state.r_recipe)
+                    except Exception as sas_err:
+                        st.session_state.sas_code = ""
+                        st.warning(f"SAS assembly failed: {sas_err}", icon="⚠️")
                     st.session_state.qc_result = None
                     st.session_state.run_attempts = []
-                    st.success("R script generated! Review the recipe and code below, then proceed to Step 5.")
+                    st.success("R script + SAS program generated! Review the code below, then proceed to Step 5.")
                 except Exception as e:
                     st.error(f"Code assembly failed: {e}")
                     st.stop()
@@ -792,9 +807,14 @@ with tab4:
                             reassembled = assemble_r_from_recipe(new_recipe)
                             reassembled, _ = _sanitise_r_code(reassembled, meta.get("dataset_source", "dataset"))
                             st.session_state.r_code   = reassembled
+                            try:
+                                st.session_state.sas_code = assemble_sas_from_recipe(new_recipe)
+                            except Exception as sas_err:
+                                st.session_state.sas_code = ""
+                                st.warning(f"SAS assembly failed: {sas_err}", icon="⚠️")
                             st.session_state.qc_result = None
                             st.session_state.run_attempts = []
-                            st.success("R code re-assembled from edited recipe.")
+                            st.success("R + SAS code re-assembled from edited recipe.")
                             st.rerun()
                         except json.JSONDecodeError as e:
                             st.error(f"Invalid JSON in recipe: {e}")
@@ -912,6 +932,11 @@ with tab4:
 # ═════════════════════════════════════════════════════════════════════════════
 with tab5:
     st.markdown("## Step 5 · Run R Script & Download Results")
+    st.caption(
+        "This tab executes the **R script** locally via Rscript and exports `final_df`. "
+        "A matching **SAS program** is also generated from the same recipe — "
+        "you can download it below and run it in your own SAS environment."
+    )
 
     # ── Sample dataset download ───────────────────────────────────────────────
     sample_adae = _sample_bytes("sample_adae.csv")
@@ -929,6 +954,42 @@ with tab5:
             use_container_width=False,
         )
         st.divider()
+
+    # ── SAS code panel ────────────────────────────────────────────────────────
+    if st.session_state.sas_code:
+        with st.expander("🟧 Generated SAS Program (download & run in your SAS environment)", expanded=False):
+            st.caption(
+                "This SAS program is assembled from the **same recipe** as the R script. "
+                "It uses PROC FREQ / PROC MEANS to mirror the Tplyr layers and writes the "
+                "result to a dataset called `FINAL_DF`. Edit the `%let data_path = ...;` "
+                "macro at the top before running."
+            )
+            edited_sas = st.text_area(
+                "SAS program",
+                value=st.session_state.sas_code,
+                height=360,
+                label_visibility="collapsed",
+                key="sas_code_editor",
+            )
+            sc1, sc2, _ = st.columns([1, 1, 4])
+            with sc1:
+                if st.button("💾 Save SAS edits", use_container_width=True, key="save_sas"):
+                    st.session_state.sas_code = edited_sas
+                    st.success("SAS program updated.")
+            with sc2:
+                st.download_button(
+                    label="⬇️ Download .sas",
+                    data=edited_sas,
+                    file_name="generated_table.sas",
+                    mime="text/plain",
+                    use_container_width=True,
+                )
+        st.divider()
+    elif st.session_state.r_code:
+        st.info(
+            "SAS program not available — re-generate the R script in Step 4 to also produce the SAS version.",
+            icon="ℹ️",
+        )
 
     if not st.session_state.r_code:
         st.warning("Complete Step 4 first — generate an R script.")
@@ -1135,8 +1196,8 @@ with tab6:
 | 1 | Parse Shell | Upload PNG / PDF / DOCX mock shell | LLM extracts table structure → JSON |
 | 2 | AdaM Specs | Upload Excel / PDF / DOCX AdaM specs | LLM extracts variables, codelists, conditions → JSON |
 | 3 | Skills Editor | Review / edit skills.md | Defines R packages & coding patterns |
-| 4 | Generate & QC | Click Generate, then Run QC | LLM writes R code; QC agent reviews and corrects |
-| 5 | Run & Download | Upload dataset, click Run | Rscript executes locally → download final_df |
+| 4 | Generate & QC | Click Generate, then Run QC | LLM writes R code (and a matching SAS program); QC agent reviews and corrects |
+| 5 | Run & Download | Upload dataset, click Run | Rscript executes locally → download `final_df`; download the generated `.sas` file too |
 """)
 
     st.markdown("---")

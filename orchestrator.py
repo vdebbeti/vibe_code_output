@@ -360,6 +360,212 @@ def _assemble_layer(layer: dict) -> str:
     return f"  add_layer(\n{inner}\n  )"
 
 
+# ── SAS code assembler (mirrors R recipe → SAS PROC code) ────────────────────
+
+def _r_expr_to_sas(expr: str) -> str:
+    """
+    Best-effort translation of an R filter/derivation expression to SAS syntax.
+    Handles the common operators that appear in clinical Tplyr recipes.
+    """
+    import re
+    s = expr
+    s = s.replace("==", "=")
+    s = s.replace("!=", "^=")
+    s = re.sub(r"\s&&?\s", " and ", s)
+    s = re.sub(r"\s\|\|?\s", " or ", s)
+    s = re.sub(r"\s%in%\s", " in ", s)
+    s = re.sub(r"\bTRUE\b", "1", s)
+    s = re.sub(r"\bFALSE\b", "0", s)
+    return s
+
+
+def assemble_sas_from_recipe(recipe: dict) -> str:
+    """
+    Deterministically assemble a SAS program from the same structured recipe
+    used for the R script. Produces a stand-alone .sas file that:
+      - reads the dataset from a &data_path macro variable
+      - applies pre_filters and derived_vars
+      - emits PROC FREQ / PROC MEANS for each layer
+      - stacks the per-layer outputs into a final dataset called FINAL_DF
+    """
+    dataset_var = (recipe.get("dataset_var") or "dataset").lower()
+    approach    = recipe.get("approach", "tplyr")
+
+    lines = [
+        "/* ---------------------------------------------------------------- */",
+        "/*  Auto-generated SAS program (from the same recipe as the R code) */",
+        "/*  Set DATA_PATH to the input dataset before running.              */",
+        "/* ---------------------------------------------------------------- */",
+        "",
+        "%let data_path = /path/to/your/dataset.sas7bdat;  /* override me */",
+        "",
+        "/* ── Load dataset ──────────────────────────────────────────────── */",
+        "%macro load_data;",
+        "  %let _ext = %lowcase(%scan(&data_path, -1, .));",
+        "  %if &_ext = sas7bdat %then %do;",
+        "    %let _dir  = %substr(&data_path, 1, %eval(%length(&data_path) - %length(%scan(&data_path, -1, /\\)) - 1));",
+        "    %let _file = %scan(%scan(&data_path, -1, /\\), 1, .);",
+        "    libname _in \"&_dir\";",
+        f"    data {dataset_var};",
+        "      set _in.&_file;",
+        "    run;",
+        "  %end;",
+        "  %else %if &_ext = csv %then %do;",
+        f"    proc import datafile=\"&data_path\" out={dataset_var} dbms=csv replace;",
+        "      getnames=yes;",
+        "    run;",
+        "  %end;",
+        "%mend load_data;",
+        "%load_data;",
+        "",
+    ]
+
+    # ── Pre-filters and derived vars (single DATA step) ──────────────────────
+    filters = recipe.get("pre_filters", []) or []
+    derived = recipe.get("derived_vars", []) or []
+    if filters or derived:
+        lines.append(f"data {dataset_var};")
+        lines.append(f"  set {dataset_var};")
+        for dv in derived:
+            name = dv.get("name", "")
+            expr = _r_expr_to_sas(dv.get("expr", ""))
+            if name:
+                lines.append(f"  {name} = {expr};")
+        if filters:
+            sas_filters = " and ".join(f"({_r_expr_to_sas(f)})" for f in filters)
+            lines.append(f"  where {sas_filters};")
+        lines.append("run;")
+        lines.append("")
+
+    if approach == "survival":
+        treatment_var = "TRTP"
+        if recipe.get("tables"):
+            treatment_var = recipe["tables"][0].get("treatment_var", "TRTP")
+        lines += [
+            "/* ── Kaplan-Meier survival summary ─────────────────────────────── */",
+            f"proc lifetest data={dataset_var} notable outsurv=_km;",
+            "  time AVAL * CNSR(1);",
+            f"  strata {treatment_var};",
+            "run;",
+            "",
+            "data final_df;",
+            "  set _km;",
+            "run;",
+            "",
+            "proc print data=final_df; run;",
+        ]
+        return "\n".join(lines)
+
+    # ── Per-table layers ─────────────────────────────────────────────────────
+    out_datasets = []
+    for tbl in recipe.get("tables", []):
+        tvar          = (tbl.get("table_var") or "t1").lower()
+        tbl_dataset   = (tbl.get("dataset_var") or dataset_var).lower()
+        treatment_var = tbl.get("treatment_var", "TRTP")
+        add_total     = tbl.get("add_total", False)
+        layers        = tbl.get("layers", []) or []
+
+        # Optional add_total — duplicate dataset with treatment overwritten to "Total"
+        work_ds = tbl_dataset
+        if add_total:
+            work_ds = f"{tvar}_in"
+            lines += [
+                f"/* add_total_group: stack a Total copy onto {tbl_dataset} */",
+                f"data {work_ds};",
+                f"  set {tbl_dataset} {tbl_dataset}(in=_a);",
+                f"  if _a then {treatment_var} = 'Total';",
+                "run;",
+                "",
+            ]
+
+        for li, layer in enumerate(layers, 1):
+            ltype       = layer.get("type", "group_count")
+            var         = layer.get("var", "")
+            nested_var  = layer.get("nested_var")
+            distinct_by = layer.get("distinct_by")
+            stats       = layer.get("stats", []) or []
+            out_ds      = f"{tvar}_l{li}"
+
+            if not var:
+                continue
+
+            if ltype == "group_desc":
+                stat_kw = []
+                if "n" in stats:      stat_kw.append("n")
+                if "mean" in stats:   stat_kw.append("mean")
+                if "sd" in stats:     stat_kw.append("std")
+                if "median" in stats: stat_kw.append("median")
+                if "min" in stats:    stat_kw.append("min")
+                if "max" in stats:    stat_kw.append("max")
+                if not stat_kw:
+                    stat_kw = ["n", "mean", "std", "median", "min", "max"]
+                output_kw = " ".join(f"{k}={var}_{k}" for k in stat_kw)
+                lines += [
+                    f"/* Layer {li}: descriptive stats for {var} by {treatment_var} */",
+                    f"proc means data={work_ds} noprint nway;",
+                    f"  class {treatment_var};",
+                    f"  var {var};",
+                    f"  output out={out_ds}(drop=_type_ _freq_) {output_kw};",
+                    "run;",
+                    "",
+                ]
+                out_datasets.append(out_ds)
+
+            else:  # group_count
+                if nested_var:
+                    # Tplyr vars(var, nested_var) → var is outer, nested_var is inner
+                    tables_spec = f"{treatment_var} * {var} * {nested_var}"
+                else:
+                    tables_spec = f"{treatment_var} * {var}"
+
+                if distinct_by:
+                    dedup_ds = f"{out_ds}_u"
+                    keep_vars = [treatment_var, var]
+                    if nested_var:
+                        keep_vars.append(nested_var)
+                    keep_vars.append(distinct_by)
+                    nested_label = f" / {nested_var}" if nested_var else ""
+                    lines += [
+                        f"/* Layer {li}: distinct {distinct_by} counts of {var}{nested_label} */",
+                        f"proc sort data={work_ds}(keep={' '.join(keep_vars)}) out={dedup_ds} nodupkey;",
+                        f"  by {' '.join(keep_vars)};",
+                        "run;",
+                        "",
+                        f"proc freq data={dedup_ds} noprint;",
+                        f"  tables {tables_spec} / out={out_ds}(drop=percent) outpct;",
+                        "run;",
+                        "",
+                    ]
+                else:
+                    nested_label = f" / {nested_var}" if nested_var else ""
+                    lines += [
+                        f"/* Layer {li}: counts of {var}{nested_label} */",
+                        f"proc freq data={work_ds} noprint;",
+                        f"  tables {tables_spec} / out={out_ds}(drop=percent) outpct;",
+                        "run;",
+                        "",
+                    ]
+                out_datasets.append(out_ds)
+
+    # ── Combine all per-layer outputs into FINAL_DF ──────────────────────────
+    if not out_datasets:
+        lines += [
+            "data final_df;",
+            "  /* recipe produced no layers */",
+            "  stop;",
+            "run;",
+        ]
+    else:
+        lines.append("/* ── Stack per-layer outputs into FINAL_DF ─────────────────────── */")
+        lines.append("data final_df;")
+        lines.append("  set " + " ".join(out_datasets) + ";")
+        lines.append("run;")
+        lines.append("")
+        lines.append("proc print data=final_df(obs=50); run;")
+
+    return "\n".join(lines)
+
+
 def _assemble_survival(recipe: dict, dataset_var: str) -> list:
     """Assemble Kaplan-Meier survival R code."""
     treatment_var = "TRTP"
