@@ -125,6 +125,27 @@ ABSOLUTE RULES — THESE ARE NON-NEGOTIABLE:
      not "Duration_of_Response", not "DOR", not any other invented name.
    - If you are unsure whether a variable exists, omit the layer entirely rather than
      inventing a plausible-sounding name.
+
+10. POPULATION FLAGS (from table_metadata.population_flags):
+    Every flag listed there MUST become a pre_filter "<FLAG> == 'Y'".
+    Example: population_flags=["SAFFL","TRTEMFL"] → pre_filters=["SAFFL == 'Y'", "TRTEMFL == 'Y'"]
+    Flag columns are NEVER analysis variables — they are filters only.
+
+11. SHELL ROW row_type GUIDE:
+    - row_type="subject_count" (e.g. "Subjects with any TEAE", "Any adverse event"):
+      DO NOT create a layer with var=TRTEMFL or var=USUBJID. Instead:
+        a. Add a derived var: {name: "any_event", expr: "'Yes'"}
+        b. Add a single layer: {type:"group_count", var:"any_event", distinct_by:"USUBJID"}
+      This produces ONE row per treatment arm = distinct subject count.
+    - row_type="category" with parent_label set: this is a NESTED row (e.g. PT
+      under SOC). DO NOT create a separate layer for it — it will appear under
+      its parent layer's nested_var automatically.
+    - row_type="continuous": use type="group_desc" with the listed stats.
+    - row_type="header" or "footnote": ignore — they are display-only.
+
+12. NEVER use TRTEMFL, SAFFL, FASFL, ANL01FL, or any *FL flag column as
+    var/nested_var. They live in pre_filters only. If the parsed shell
+    accidentally lists one as analysis_var, ignore it and follow rule 11.
 """
 
 # ── QC system prompt ──────────────────────────────────────────────────────────
@@ -399,7 +420,7 @@ def assemble_sas_from_recipe(recipe: dict) -> str:
         "",
         "%let data_path = /path/to/your/dataset.sas7bdat;  /* override me */",
         "",
-        "/* ── Load dataset ──────────────────────────────────────────────── */",
+        "/* === Load dataset =============================================== */",
         "%macro load_data;",
         "  %let _ext = %lowcase(%scan(&data_path, -1, .));",
         "  %if &_ext = sas7bdat %then %do;",
@@ -442,7 +463,7 @@ def assemble_sas_from_recipe(recipe: dict) -> str:
         if recipe.get("tables"):
             treatment_var = recipe["tables"][0].get("treatment_var", "TRTP")
         lines += [
-            "/* ── Kaplan-Meier survival summary ─────────────────────────────── */",
+            "/* === Kaplan-Meier survival summary ============================== */",
             f"proc lifetest data={dataset_var} notable outsurv=_km;",
             "  time AVAL * CNSR(1);",
             f"  strata {treatment_var};",
@@ -556,7 +577,7 @@ def assemble_sas_from_recipe(recipe: dict) -> str:
             "run;",
         ]
     else:
-        lines.append("/* ── Stack per-layer outputs into FINAL_DF ─────────────────────── */")
+        lines.append("/* === Stack per-layer outputs into FINAL_DF ====================== */")
         lines.append("data final_df;")
         lines.append("  set " + " ".join(out_datasets) + ";")
         lines.append("run;")

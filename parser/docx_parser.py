@@ -6,34 +6,7 @@ import json
 import io
 import docx
 from llm_client import call_llm
-
-_SYSTEM_PROMPT = """
-You are a clinical trial table parser. You will receive raw text extracted from a
-Word document mock shell (a template table used in clinical study reports).
-Convert it into a structured JSON object — no markdown, no explanation.
-
-The JSON must follow this exact schema:
-{
-  "table_metadata": {
-    "title": "<full table title>",
-    "population": "<population label if visible, else null>",
-    "dataset_source": "<likely ADAM dataset: ADSL, ADAE, ADCM, ADLB, etc.>"
-  },
-  "columns": [
-    {"label": "<column header text>", "type": "<stub|treatment_group|total|subgroup>", "value": "<treatment code or null>"}
-  ],
-  "rows": [
-    {"label": "<row label>", "analysis_var": "<likely SAS/R variable name>", "stats": ["<stat1>", "<stat2>"]}
-  ]
-}
-
-Rules:
-- "type": "stub" for leftmost label column, "treatment_group" for each arm,
-  "total" for Total column, "subgroup" for severity/sub-columns.
-- "analysis_var": infer the CDISC ADAM variable name (AGE, SEX, RACE, AEBODSYS, AEDECOD, etc.)
-- "stats": list statistics shown (e.g. "n", "Mean (SD)", "Median", "Min, Max", "n (%)")
-- Return ONLY the JSON object. No markdown fences.
-"""
+from ._shell_prompt import SHELL_PARSE_SYSTEM
 
 
 def _extract_text(file_bytes: bytes) -> str:
@@ -45,7 +18,20 @@ def _extract_text(file_bytes: bytes) -> str:
     for idx, table in enumerate(doc.tables):
         lines.append(f"\n--- TABLE {idx + 1} ---")
         for row in table.rows:
-            lines.append(" | ".join(c.text.strip() for c in row.cells))
+            # Preserve cell-level indentation by prefixing leading spaces from
+            # the first cell's paragraph (python-docx strips visual indent),
+            # so the LLM can still see the SOC > PT hierarchy in the dump.
+            first = row.cells[0]
+            indent = ""
+            if first.paragraphs:
+                p = first.paragraphs[0]
+                pf = p.paragraph_format
+                if pf and pf.left_indent:
+                    indent = "  " * max(1, int(pf.left_indent.pt // 12))
+            cells = [c.text.strip() for c in row.cells]
+            if cells:
+                cells[0] = indent + cells[0]
+            lines.append(" | ".join(cells))
     return "\n".join(lines)
 
 
@@ -65,14 +51,19 @@ def parse_docx(
 ) -> dict:
     extracted = _extract_text(file_bytes)
     raw = call_llm(
-        system=_SYSTEM_PROMPT,
+        system=SHELL_PARSE_SYSTEM,
         user=(
             "Parse this clinical mock shell table (extracted from Word/DOCX) "
-            "into the JSON schema:\n\n" + extracted
+            "into the JSON schema described in your instructions. Pay especially "
+            "close attention to row indentation — leading whitespace in the row "
+            "labels indicates SOC > PT (or parameter > category) nesting; every "
+            "indented row must record its parent_label and an indent_level >= 1. "
+            "Return ONLY the JSON object.\n\n"
+            + extracted
         ),
         provider=provider,
         model=model,
         api_key=api_key or "",
-        max_tokens=2000,
+        max_tokens=4000,
     )
     return json.loads(_strip_fences(raw))

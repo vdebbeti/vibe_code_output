@@ -6,34 +6,7 @@ import json
 import io
 import pdfplumber
 from llm_client import call_llm
-
-_SYSTEM_PROMPT = """
-You are a clinical trial table parser. You will receive raw text extracted from a
-PDF mock shell (a template table used in clinical study reports).
-Convert it into a structured JSON object — no markdown, no explanation.
-
-The JSON must follow this exact schema:
-{
-  "table_metadata": {
-    "title": "<full table title>",
-    "population": "<population label if visible, else null>",
-    "dataset_source": "<likely ADAM dataset: ADSL, ADAE, ADCM, ADLB, etc.>"
-  },
-  "columns": [
-    {"label": "<column header text>", "type": "<stub|treatment_group|total|subgroup>", "value": "<treatment code or null>"}
-  ],
-  "rows": [
-    {"label": "<row label>", "analysis_var": "<likely SAS/R variable name>", "stats": ["<stat1>", "<stat2>"]}
-  ]
-}
-
-Rules:
-- "type": "stub" for leftmost label column, "treatment_group" for each arm,
-  "total" for Total column, "subgroup" for severity/sub-columns.
-- "analysis_var": infer the CDISC ADAM variable name (AGE, SEX, RACE, AEBODSYS, AEDECOD, etc.)
-- "stats": list statistics shown (e.g. "n", "Mean (SD)", "Median", "Min, Max", "n (%)")
-- Return ONLY the JSON object. No markdown fences.
-"""
+from ._shell_prompt import SHELL_PARSE_SYSTEM
 
 
 def _extract_text(file_bytes: bytes) -> str:
@@ -49,6 +22,8 @@ def _extract_text(file_bytes: bytes) -> str:
                         if row:
                             lines.append(" | ".join(str(c).strip() if c else "" for c in row))
             else:
+                # Fall back to raw text — preserves leading whitespace, which
+                # carries SOC > PT indentation cues for the LLM.
                 text = page.extract_text()
                 if text:
                     lines.append(text)
@@ -71,14 +46,19 @@ def parse_pdf(
 ) -> dict:
     extracted = _extract_text(file_bytes)
     raw = call_llm(
-        system=_SYSTEM_PROMPT,
+        system=SHELL_PARSE_SYSTEM,
         user=(
-            "Parse this clinical mock shell table (extracted from PDF) "
-            "into the JSON schema:\n\n" + extracted
+            "Parse this clinical mock shell table (extracted from PDF) into the "
+            "JSON schema described in your instructions. Pay especially close "
+            "attention to row indentation — leading whitespace in the row labels "
+            "indicates SOC > PT (or parameter > category) nesting; every indented "
+            "row must record its parent_label and an indent_level >= 1. "
+            "Return ONLY the JSON object.\n\n"
+            + extracted
         ),
         provider=provider,
         model=model,
         api_key=api_key or "",
-        max_tokens=2000,
+        max_tokens=4000,
     )
     return json.loads(_strip_fences(raw))
