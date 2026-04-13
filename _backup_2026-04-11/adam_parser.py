@@ -47,38 +47,24 @@ def _strip_fences(raw: str) -> str:
 
 
 def _call_llm(raw_text: str, provider: str, model: str, api_key: str) -> dict:
-    text = raw_text[:40000]  # ~10k tokens — safe for all supported models (128k+ context)
+    text = raw_text[:12000]  # guard against token overflow
     raw = call_llm(
         system=_SYSTEM,
         user=f"Extract AdaM specs JSON from the following text:\n\n{text}",
         provider=provider,
         model=model,
         api_key=api_key,
-        max_tokens=4000,
+        max_tokens=2000,
     )
     return json.loads(_strip_fences(raw))
 
 
 # ── Excel ─────────────────────────────────────────────────────────────────────
-_PRIORITY_KEYWORDS = {"variable", "metadata", "value level", "codelist", "param",
-                      "analysis", "derivation", "where clause", "dataset"}
-
 def _extract_excel_text(file_bytes: bytes) -> str:
     import openpyxl
     wb = openpyxl.load_workbook(io.BytesIO(file_bytes), data_only=True)
-
-    # Extract all sheets, but put priority sheets (variable metadata, codelists) first
-    priority_sheets = []
-    other_sheets = []
-    for name in wb.sheetnames:
-        name_lower = name.lower()
-        if any(kw in name_lower for kw in _PRIORITY_KEYWORDS):
-            priority_sheets.append(name)
-        else:
-            other_sheets.append(name)
-
     lines = []
-    for name in priority_sheets + other_sheets:
+    for name in wb.sheetnames:
         ws = wb[name]
         lines.append(f"\n=== Sheet: {name} ===")
         for row in ws.iter_rows(values_only=True):

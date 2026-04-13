@@ -44,21 +44,20 @@ def call_llm(
     image_bytes: bytes | None = None,
     image_mime: str = "image/png",
     max_tokens: int = 2000,
-    temperature: float = 0.0,
 ) -> str:
     """Call any supported LLM. Returns the response text."""
     if provider == "OpenAI":
-        return _call_openai(system, user, model, api_key, image_bytes, image_mime, max_tokens, temperature)
+        return _call_openai(system, user, model, api_key, image_bytes, image_mime, max_tokens)
     elif provider == "Google Gemini":
-        return _call_gemini(system, user, model, api_key, image_bytes, image_mime, max_tokens, temperature)
+        return _call_gemini(system, user, model, api_key, image_bytes, image_mime, max_tokens)
     elif provider == "Anthropic Claude":
-        return _call_claude(system, user, model, api_key, image_bytes, image_mime, max_tokens, temperature)
+        return _call_claude(system, user, model, api_key, image_bytes, image_mime, max_tokens)
     else:
         raise ValueError(f"Unknown provider: {provider!r}")
 
 
 # ── OpenAI ────────────────────────────────────────────────────────────────────
-def _call_openai(system, user, model, api_key, image_bytes, image_mime, max_tokens, temperature):
+def _call_openai(system, user, model, api_key, image_bytes, image_mime, max_tokens):
     from openai import OpenAI
     client = OpenAI(api_key=api_key)
 
@@ -78,17 +77,17 @@ def _call_openai(system, user, model, api_key, image_bytes, image_mime, max_toke
             {"role": "user",   "content": user_content},
         ],
         max_tokens=max_tokens,
-        temperature=temperature,
+        temperature=0,
     )
     return resp.choices[0].message.content.strip()
 
 
 # ── Google Gemini ─────────────────────────────────────────────────────────────
-def _call_gemini(system, user, model, api_key, image_bytes, image_mime, max_tokens, temperature):
+def _call_gemini(system, user, model, api_key, image_bytes, image_mime, max_tokens):
     import google.generativeai as genai
     genai.configure(api_key=api_key)
 
-    generation_config = genai.GenerationConfig(max_output_tokens=max_tokens, temperature=temperature)
+    generation_config = genai.GenerationConfig(max_output_tokens=max_tokens, temperature=0.0)
     gemini_model = genai.GenerativeModel(
         model_name=model,
         system_instruction=system,
@@ -106,7 +105,7 @@ def _call_gemini(system, user, model, api_key, image_bytes, image_mime, max_toke
 
 
 # ── Anthropic Claude ──────────────────────────────────────────────────────────
-def _call_claude(system, user, model, api_key, image_bytes, image_mime, max_tokens, temperature):
+def _call_claude(system, user, model, api_key, image_bytes, image_mime, max_tokens):
     import anthropic
     client = anthropic.Anthropic(api_key=api_key)
 
@@ -122,7 +121,6 @@ def _call_claude(system, user, model, api_key, image_bytes, image_mime, max_toke
     resp = client.messages.create(
         model=model,
         max_tokens=max_tokens,
-        temperature=temperature,
         system=system,
         messages=[{"role": "user", "content": user_content}],
     )
