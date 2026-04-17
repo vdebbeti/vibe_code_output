@@ -55,6 +55,7 @@ def _call_llm(raw_text: str, provider: str, model: str, api_key: str) -> dict:
         model=model,
         api_key=api_key,
         max_tokens=4000,
+        temperature=0.7,
     )
     return json.loads(_strip_fences(raw))
 

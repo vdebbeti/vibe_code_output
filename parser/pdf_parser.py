@@ -60,5 +60,6 @@ def parse_pdf(
         model=model,
         api_key=api_key or "",
         max_tokens=4000,
+        temperature=0.7,
     )
     return json.loads(_strip_fences(raw))

@@ -361,7 +361,7 @@ def generate_r_recipe(
         model=model,
         api_key=api_key,
         max_tokens=4000,
-        temperature=0.2,
+        temperature=0.7,
     )
 
     raw = raw.strip()
@@ -837,7 +837,7 @@ Rules for the fix:
         model=model,
         api_key=api_key,
         max_tokens=3000,
-        temperature=0.2,
+        temperature=0.7,
     )
     return _strip_fences(raw)
 
@@ -920,7 +920,7 @@ Generate the R script for this table. Output only R code.
         model=model,
         api_key=api_key or "",
         max_tokens=3000,
-        temperature=0.2,
+        temperature=0.7,
     )
     return _strip_fences(raw)
 

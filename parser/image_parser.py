@@ -40,5 +40,6 @@ def parse_png(
         image_bytes=file_bytes,
         image_mime=mime,
         max_tokens=4000,
+        temperature=0.7,
     )
     return json.loads(_strip_fences(raw))
