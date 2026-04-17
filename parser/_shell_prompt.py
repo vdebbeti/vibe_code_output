@@ -33,7 +33,8 @@ fences, no commentary.
       "parent_label": "<label of the parent row if this row is indented under another, else null>",
       "indent_level": 0,
       "row_type":     "header|category|subject_count|continuous|footnote",
-      "distinct_by":  "<column to dedupe on for distinct counts, usually USUBJID, else null>"
+      "distinct_by":  "<column to dedupe on for distinct counts, usually USUBJID, else null>",
+      "dynamic":      "<true if this row type should iterate over ALL values in the dataset (AE SOC/PT, demographics categories, response categories); false for fixed rows like subject_count, derived rows, headers>"
     }
   ]
 }
@@ -89,7 +90,27 @@ fences, no commentary.
 7. STATS — list them exactly as shown in the shell, in the order shown.
    Use canonical labels: "n", "n (%)", "Mean (SD)", "Median", "Min, Max", "Q1, Q3".
 
-8. NEVER invent rows or columns that are not visible in the shell.
+8. MOCK SHELL ROWS ARE REPRESENTATIVE EXAMPLES — NOT AN EXHAUSTIVE LIST.
+   The rows shown in a mock shell are placeholders to illustrate the table
+   structure. The actual output will contain ALL unique values from the
+   ADaM dataset, not only the examples shown.
+
+   For the following table types, mark every data-driven row section with
+   `"dynamic": true` to signal that R code must iterate over ALL dataset
+   values, not just the example labels:
+   - AE/Safety tables: ALL SOC rows (AEBODSYS) and ALL PT rows (AEDECOD)
+     → set `dynamic: true` on every SOC and PT row. Do NOT hard-code which
+     SOCs or PTs to include.
+   - Demographics/baseline: ALL category levels under each variable
+     (e.g. all SEX levels, all RACE levels) → `dynamic: true`.
+   - Response tables: ALL AVALC category rows → `dynamic: true`.
+   - Lab/vital sign tables: ALL parameter rows → `dynamic: true`.
+
+   Rows that are NOT dynamic (always include verbatim):
+   - "Any adverse event" / "Subjects with any TEAE" (subject_count rows)
+   - Explicitly derived rows (ORR, DCR, etc.)
+   - Header and footnote rows
+
    NEVER omit visible rows. If a label is unclear, copy the text verbatim
    into `label` and leave `analysis_var` as your best guess.
 
@@ -109,12 +130,19 @@ fences, no commentary.
 Expected rows fragment:
   [
     {"label":"Subjects with any TEAE","analysis_var":"USUBJID","stats":["n (%)"],
-     "parent_label":null,"indent_level":0,"row_type":"subject_count","distinct_by":"USUBJID"},
+     "parent_label":null,"indent_level":0,"row_type":"subject_count","distinct_by":"USUBJID",
+     "dynamic":false},
     {"label":"Gastrointestinal disorders","analysis_var":"AEBODSYS","stats":["n (%)"],
-     "parent_label":null,"indent_level":0,"row_type":"category","distinct_by":"USUBJID"},
+     "parent_label":null,"indent_level":0,"row_type":"category","distinct_by":"USUBJID",
+     "dynamic":true},
     {"label":"Nausea","analysis_var":"AEDECOD","stats":["n (%)"],
-     "parent_label":"Gastrointestinal disorders","indent_level":1,"row_type":"category","distinct_by":"USUBJID"},
+     "parent_label":"Gastrointestinal disorders","indent_level":1,"row_type":"category","distinct_by":"USUBJID",
+     "dynamic":true},
     {"label":"Vomiting","analysis_var":"AEDECOD","stats":["n (%)"],
-     "parent_label":"Gastrointestinal disorders","indent_level":1,"row_type":"category","distinct_by":"USUBJID"}
+     "parent_label":"Gastrointestinal disorders","indent_level":1,"row_type":"category","distinct_by":"USUBJID",
+     "dynamic":true}
   ]
+  NOTE: dynamic=true on SOC and PT rows means "use ALL AEBODSYS/AEDECOD from ADAE",
+  not just the example labels shown. dynamic=false on the subject_count row means
+  it is always present verbatim.
 """
